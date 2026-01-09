@@ -28,6 +28,10 @@ env/
 ENV/
 env.bak/
 venv.bak/
+.venv/
+
+# Poetry
+# Note: poetry.lock should be committed for reproducibility
 
 # PyCharm
 .idea/
@@ -103,5 +107,9 @@ service-account-*.json
 *.dockerfile.swp
 
 # Local data/test files
-data/
+# Keep directory structure but ignore database files
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+!data/.gitkeep
 test_data/

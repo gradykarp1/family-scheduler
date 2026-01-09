@@ -1,0 +1,57 @@
+[tool.poetry]
+name = "family-scheduler"
+version = "0.1.0"
+description = "Agent-based family scheduling application"
+authors = ["Grady Karp <grady@example.com>"]
+readme = "README.md"
+packages = [{include = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.109.0"
+uvicorn = {extras = ["standard"], version = "^0.27.0"}
+sqlalchemy = "^2.0.25"
+alembic = "^1.13.1"
+langchain = "^0.1.0"
+langgraph = "^0.0.20"
+langchain-anthropic = "^0.1.0"
+langchain-openai = "^0.0.5"
+pydantic = "^2.5.0"
+pydantic-settings = "^2.1.0"
+python-dotenv = "^1.0.0"
+python-dateutil = "^2.8.2"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.4"
+pytest-asyncio = "^0.23.3"
+pytest-cov = "^4.1.0"
+black = "^24.1.0"
+isort = "^5.13.2"
+mypy = "^1.8.0"
+ruff = "^0.1.14"
+pre-commit = "^3.6.0"
+
+[tool.poetry.scripts]
+api = "src.api.main:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

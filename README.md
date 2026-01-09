@@ -32,6 +32,7 @@ The system uses a **hub-and-spoke agent architecture** where a central orchestra
 
 ### Phase 1 (Local Development - Current)
 - **Language**: Python 3.11+
+- **Package Manager**: Poetry
 - **Agent Framework**: LangGraph
 - **API**: FastAPI
 - **Database**: SQLite
@@ -54,15 +55,24 @@ family-scheduler/
 │   │   ├── agents.md           # Agent architecture details
 │   │   ├── infrastructure.md   # Deployment and scaling
 │   │   └── data-model.md       # Database schema
-│   └── decisions/              # Architecture Decision Records
+│   └── decisions/              # Architecture Decision Records (ADRs)
 ├── src/
 │   ├── api/                    # FastAPI application
 │   ├── agents/                 # LangGraph agents
 │   ├── models/                 # SQLAlchemy models
 │   ├── services/               # Business logic
-│   └── utils/                  # Utilities
-├── tests/                      # Test suite
-├── requirements.txt            # Python dependencies
+│   ├── utils/                  # Utilities
+│   └── config.py               # Configuration management
+├── tests/
+│   ├── unit/                   # Unit tests
+│   ├── integration/            # Integration tests
+│   └── fixtures/               # Test fixtures
+├── data/                       # SQLite database location
+├── alembic/                    # Database migrations
+├── scripts/                    # Utility scripts
+├── pyproject.toml              # Poetry configuration & dependencies
+├── poetry.lock                 # Locked dependency versions
+├── .env.example                # Environment variable template
 └── README.md                   # This file
 ```
 
@@ -71,33 +81,75 @@ family-scheduler/
 ### Prerequisites
 
 - Python 3.11 or higher
-- pip (Python package manager)
-- Virtual environment tool (venv, virtualenv, or Poetry)
-- OpenAI or Anthropic API key
+- [Poetry](https://python-poetry.org/) (Python dependency manager)
+- OpenAI or Anthropic API key (for LLM agents)
 
 ### Installation
+
+#### 1. Install Poetry (if not already installed)
+
+```bash
+# macOS/Linux/WSL
+curl -sSL https://install.python-poetry.org | python3 -
+
+# Windows (PowerShell)
+(Invoke-WebRequest -Uri https://install.python-poetry.org -UseBasicParsing).Content | py -
+```
+
+#### 2. Get Anthropic API Key
+
+The project uses Anthropic's Claude API for all AI agents.
+
+1. Sign up at [Anthropic Console](https://console.anthropic.com/)
+2. Navigate to **API Keys** section
+3. Create a new key (name it "Family Scheduler Development")
+4. Copy the key (starts with `sk-ant-api03-...`)
+
+**Cost Estimate**: Development typically costs $20-50/month with Claude 3.5 Sonnet.
+
+#### 3. Set up the project
 
 ```bash
 # Clone the repository
 git clone https://github.com/YOUR_USERNAME/family-scheduler.git
 cd family-scheduler
 
-# Create virtual environment
-python3.11 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
+# Install dependencies (Poetry will create virtual environment automatically)
+poetry install
 
 # Set up environment variables
 cp .env.example .env
-# Edit .env and add your LLM API key
+# Edit .env and add your Anthropic API key:
+# ANTHROPIC_API_KEY=sk-ant-api03-...
 
 # Initialize database
-alembic upgrade head
+poetry run alembic upgrade head
 
 # Run development server
-uvicorn src.api.main:app --reload
+poetry run uvicorn src.api.main:app --reload
+```
+
+### Quick Start Commands
+
+```bash
+# Activate Poetry shell (optional, makes commands shorter)
+poetry shell
+
+# Run API server
+poetry run uvicorn src.api.main:app --reload
+
+# Run tests
+poetry run pytest
+
+# Run linters
+poetry run black src/ tests/
+poetry run ruff check src/ tests/
+
+# Add new dependency
+poetry add package-name
+
+# Add dev dependency
+poetry add --group dev package-name
 ```
 
 ### Usage
@@ -137,7 +189,9 @@ This project is designed to teach:
 ## Development Phases
 
 ### Phase 1: Local Development (Current)
-- ✅ Architecture design complete
+- ✅ Architecture design complete (ADRs 1-9)
+- ✅ Development environment setup (ADR-010)
+- ✅ LLM provider configuration (ADR-011)
 - 🔄 Implement core data models
 - 🔄 Build FastAPI endpoints
 - 🔄 Create orchestrator and agents
