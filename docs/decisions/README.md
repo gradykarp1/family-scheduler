@@ -110,6 +110,12 @@ _Note: This section is optional for Accepted decisions and required for Implemen
 **Summary:** Use Anthropic Claude as LLM provider with Claude Sonnet 4 as primary model
 **Date:** 2026-01-08
 
+### [ADR-012: LangGraph State Schema Design](./adr-012-langgraph-state-schema-design.md)
+**Status:** Implemented ✅
+**Implementation:** 2026-01-08
+**Summary:** TypedDict root state with namespaced agent outputs and Pydantic models for nested structures
+**Date:** 2026-01-08
+
 ---
 
 ## Creating a New ADR
