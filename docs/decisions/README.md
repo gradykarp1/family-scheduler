@@ -116,6 +116,30 @@ _Note: This section is optional for Accepted decisions and required for Implemen
 **Summary:** TypedDict root state with namespaced agent outputs and Pydantic models for nested structures
 **Date:** 2026-01-08
 
+### [ADR-013: SQLAlchemy Database Schema & ORM Implementation](./adr-013-sqlalchemy-database-schema.md)
+**Status:** Accepted
+**Implementation:** TBD
+**Summary:** Modular SQLAlchemy models with UUID PKs, hybrid JSON/JSONB, sync sessions, and soft deletion
+**Date:** 2026-01-11
+
+### [ADR-014: API Endpoint Design & FastAPI Structure](./adr-014-api-endpoint-design-fastapi-structure.md)
+**Status:** Accepted
+**Implementation:** TBD
+**Summary:** Synchronous FastAPI endpoints with WorkflowResponse envelope, two-phase commit for conflicts, and comprehensive OpenAPI documentation
+**Date:** 2026-01-11
+
+### [ADR-015: Orchestrator Implementation with LangGraph](./adr-015-orchestrator-implementation-langgraph.md)
+**Status:** Accepted
+**Implementation:** TBD
+**Summary:** StateGraph-based orchestrator with pure function nodes, conditional routing, in-memory checkpointing, and three-level testing strategy
+**Date:** 2026-01-11
+
+### [ADR-016: Individual Agent Implementation & Prompt Engineering](./adr-016-individual-agent-implementation.md)
+**Status:** Accepted
+**Implementation:** TBD
+**Summary:** Standardized agent pattern with Pydantic schemas, Sonnet/Haiku model selection, rule-based confidence scoring, and comprehensive testing strategy
+**Date:** 2026-01-11
+
 ---
 
 ## Creating a New ADR
@@ -129,4 +153,4 @@ To create a new ADR:
 
 ---
 
-*Last Updated: 2026-01-08*
+*Last Updated: 2026-01-11*

@@ -193,6 +193,7 @@ This project is designed to teach:
 - ✅ Development environment setup (ADR-010)
 - ✅ LLM provider configuration (ADR-011)
 - ✅ LangGraph state schema design (ADR-012)
+- ✅ Database schema & ORM design (ADR-013)
 - 🔄 Implement core data models
 - 🔄 Build FastAPI endpoints
 - 🔄 Create orchestrator and agents
