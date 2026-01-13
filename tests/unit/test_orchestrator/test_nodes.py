@@ -187,8 +187,17 @@ class TestSchedulingNode:
 
         result = scheduling_node(state)
 
-        assert result["agent_outputs"]["scheduling"]["data"]["candidate_times"] == []
-        assert result["agent_outputs"]["scheduling"]["confidence"] == 0.3
+        # Now the scheduling node finds available slots when no time is specified
+        candidate_times = result["agent_outputs"]["scheduling"]["data"]["candidate_times"]
+        assert isinstance(candidate_times, list)
+        # If slots are found, confidence should be 0.8; if not found, 0.3
+        confidence = result["agent_outputs"]["scheduling"]["confidence"]
+        if len(candidate_times) > 0:
+            assert confidence == 0.8
+            assert result["selected_time_slot"] is not None
+        else:
+            assert confidence == 0.3
+            assert result["selected_time_slot"] is None
 
 
 class TestResourceManagerNode:

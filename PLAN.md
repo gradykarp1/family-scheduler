@@ -25,37 +25,44 @@
    - `src/services/recurrence.py` - RRULE parsing and expansion (dateutil)
    - `src/services/queries.py` - Event/calendar queries with eager loading
    - `src/services/resources.py` - Resource availability checking
+9. **Google Calendar Integration** - External calendar as primary storage with 96 tests
+   - `src/integrations/base.py` - CalendarRepository protocol, CalendarEvent types
+   - `src/integrations/google_calendar/` - Full Google Calendar API implementation
+     - `exceptions.py` - Custom exceptions with retryable flags
+     - `auth.py` - Service account authentication
+     - `adapter.py` - Event ↔ Google Calendar format mapping
+     - `client.py` - API client with retry logic
+     - `repository.py` - Async GoogleCalendarRepository
+   - `src/services/calendar_service.py` - Sync wrapper for orchestrator nodes
+   - Orchestrator nodes updated to use calendar service:
+     - `scheduling_node` - Finds available slots from calendar
+     - `conflict_detection_node` - Queries real events for conflicts
+     - `auto_confirm_node` - Persists events to calendar
+     - `query_node` - Queries actual events for responses
 
 ### Not Yet Implemented
-- Enhanced Agent Logic (more sophisticated prompts and database integration)
+- Enhanced Agent Logic (improved prompts and structured outputs)
 - Integration Tests
 
-**Total Tests: 375 passing**
+**Total Tests: 470 passing**
 
 ---
 
 ## Recommended Next Steps
 
-### Phase 2: Enhanced Agent Logic (ADR-016)
-**Priority: High - improve agent quality**
+### Phase 2: Enhanced Agent Logic (ADR-016) ✅ PARTIALLY COMPLETED
+**Status: Calendar integration done, prompt improvements pending**
 
-The orchestrator nodes have basic implementations. Enhance them with:
+**Phase 2a: Calendar Integration** ✅ COMPLETED
+- Scheduling Agent queries calendar for available slots
+- Conflict Detection queries real events for overlaps
+- Auto Confirm persists events to calendar (Google or local)
+- Query Node retrieves actual events for responses
 
-**Phase 2a: Database Integration**
-- Connect Scheduling Agent to query existing events
-- Connect Resource Manager to check actual availability
-- Connect Conflict Detection to find real overlaps
-
-**Phase 2b: Improved Prompts**
+**Phase 2b: Improved Prompts** - NOT YET STARTED
 - Enhance NL Parser with few-shot examples
 - Add structured output parsing with Pydantic
 - Improve Resolution Agent strategy generation
-
-Each agent enhancement needs:
-- Database session integration
-- Pydantic output schemas with validation
-- Improved prompt templates
-- Higher test coverage
 
 ### Phase 3: FastAPI Endpoints (ADR-014) ✅ COMPLETED
 **Status: Done - 62 tests passing**

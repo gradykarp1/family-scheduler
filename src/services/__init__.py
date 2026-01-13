@@ -44,6 +44,12 @@ from src.services.resources import (
     get_resources_by_type,
 )
 
+from src.services.calendar_service import (
+    CalendarService,
+    get_calendar_service,
+    reset_calendar_service,
+)
+
 __all__ = [
     # Recurrence
     "RecurrenceInstance",
@@ -76,4 +82,8 @@ __all__ = [
     "find_available_slots",
     "get_resource_utilization",
     "get_resources_by_type",
+    # Calendar Service
+    "CalendarService",
+    "get_calendar_service",
+    "reset_calendar_service",
 ]

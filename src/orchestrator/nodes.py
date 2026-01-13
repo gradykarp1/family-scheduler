@@ -12,7 +12,7 @@ Nodes never raise exceptions - errors are captured in state.
 """
 
 from typing import Any
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import logging
 import uuid
 
@@ -214,7 +214,7 @@ def scheduling_node(state: FamilySchedulerState) -> dict[str, Any]:
     Find optimal time slots for the event.
 
     This node:
-    - Analyzes participant availability
+    - Analyzes participant availability via calendar service
     - Considers constraints (hard and soft)
     - Proposes candidate time slots with scores
 
@@ -227,6 +227,9 @@ def scheduling_node(state: FamilySchedulerState) -> dict[str, Any]:
     logger.info(f"[{conv_id}] Executing Scheduling node")
 
     try:
+        from src.services.calendar_service import get_calendar_service
+        from dateutil.parser import parse as parse_datetime
+
         parsed_data = state.get("parsed_event_data", {})
         start_time = parsed_data.get("start_time")
         end_time = parsed_data.get("end_time")
@@ -247,12 +250,38 @@ def scheduling_node(state: FamilySchedulerState) -> dict[str, Any]:
             confidence = 0.95
             explanation = f"Using specified time: {start_time}"
         else:
-            # No time specified - would query database for available slots
-            # For now, return empty candidates (triggers clarification)
-            candidate_times = []
-            recommended_time = None
-            confidence = 0.3
-            explanation = "No time specified, need user input"
+            # No specific time - search for available slots using calendar service
+            calendar_service = get_calendar_service()
+
+            # Define search window (next 7 days by default)
+            search_start = datetime.now(timezone.utc)
+            search_end = search_start + timedelta(days=7)
+
+            # Estimate duration (default 1 hour if not specified)
+            duration_minutes = 60
+            if start_time and end_time:
+                try:
+                    start_dt = parse_datetime(start_time)
+                    end_dt = parse_datetime(end_time)
+                    duration_minutes = int((end_dt - start_dt).total_seconds() / 60)
+                except Exception:
+                    pass
+
+            # Find available slots
+            candidate_times = calendar_service.find_available_slots(
+                start=search_start,
+                end=search_end,
+                duration_minutes=duration_minutes,
+            )
+
+            if candidate_times:
+                recommended_time = candidate_times[0].get("start_time")
+                confidence = 0.8
+                explanation = f"Found {len(candidate_times)} available time slots"
+            else:
+                recommended_time = None
+                confidence = 0.3
+                explanation = "No available slots found in search window"
 
         # Build agent output
         scheduling_data = {
@@ -264,7 +293,7 @@ def scheduling_node(state: FamilySchedulerState) -> dict[str, Any]:
             "data": scheduling_data,
             "confidence": confidence,
             "explanation": explanation,
-            "reasoning": "Analyzed time constraints and availability",
+            "reasoning": "Analyzed calendar availability and constraints",
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -431,7 +460,7 @@ def conflict_detection_node(state: FamilySchedulerState) -> dict[str, Any]:
     Detect scheduling conflicts with existing events.
 
     This node:
-    - Checks for time overlaps with existing events
+    - Queries calendar for events in the selected time slot
     - Identifies participant conflicts (double-booking)
     - Checks constraint violations
 
@@ -444,20 +473,89 @@ def conflict_detection_node(state: FamilySchedulerState) -> dict[str, Any]:
     logger.info(f"[{conv_id}] Executing Conflict Detection node")
 
     try:
+        from src.services.calendar_service import get_calendar_service
+        from dateutil.parser import parse as parse_datetime
+
         parsed_data = state.get("parsed_event_data", {})
         selected_slot = state.get("selected_time_slot", {})
         participants = parsed_data.get("participants", [])
 
-        # Detect conflicts (simplified - would query database)
         conflicts = []
-        has_conflicts = False
         blocking_conflicts = []
 
-        # Placeholder conflict detection
-        # In real implementation, would:
-        # 1. Query events in time range
-        # 2. Check participant overlaps
-        # 3. Check constraint violations
+        # Get the calendar service
+        calendar_service = get_calendar_service()
+
+        # Parse selected time slot
+        slot_start = selected_slot.get("start_time")
+        slot_end = selected_slot.get("end_time")
+
+        if slot_start and slot_end:
+            # Parse times if they're strings
+            if isinstance(slot_start, str):
+                slot_start_dt = parse_datetime(slot_start)
+            else:
+                slot_start_dt = slot_start
+
+            if isinstance(slot_end, str):
+                slot_end_dt = parse_datetime(slot_end)
+            else:
+                slot_end_dt = slot_end
+
+            # Ensure timezone awareness
+            if slot_start_dt.tzinfo is None:
+                slot_start_dt = slot_start_dt.replace(tzinfo=timezone.utc)
+            if slot_end_dt.tzinfo is None:
+                slot_end_dt = slot_end_dt.replace(tzinfo=timezone.utc)
+
+            # Query events that overlap with the selected time slot
+            overlapping_events = calendar_service.get_events_in_range(
+                start=slot_start_dt,
+                end=slot_end_dt,
+            )
+
+            # Check each overlapping event for conflicts
+            for event in overlapping_events:
+                # Skip cancelled events
+                if event.status == "cancelled":
+                    continue
+
+                # Check for time overlap (any overlap is a potential conflict)
+                conflict_type = "time_overlap"
+                is_blocking = True
+
+                # Check if any participants are double-booked
+                event_attendees = set(a.lower() for a in event.attendees)
+                requested_participants = set(p.lower() for p in participants)
+                overlapping_participants = event_attendees & requested_participants
+
+                if overlapping_participants:
+                    conflict_type = "participant_conflict"
+                    is_blocking = True
+
+                conflict = {
+                    "conflict_id": str(uuid.uuid4()),
+                    "type": conflict_type,
+                    "conflicting_event": {
+                        "event_id": event.id,
+                        "title": event.title,
+                        "start_time": event.start_time.isoformat(),
+                        "end_time": event.end_time.isoformat(),
+                        "attendees": event.attendees,
+                    },
+                    "overlapping_participants": list(overlapping_participants),
+                    "is_blocking": is_blocking,
+                    "description": (
+                        f"Conflicts with '{event.title}' "
+                        f"({event.start_time.strftime('%H:%M')} - {event.end_time.strftime('%H:%M')})"
+                    ),
+                }
+                conflicts.append(conflict)
+
+                if is_blocking:
+                    blocking_conflicts.append(conflict["conflict_id"])
+
+        has_conflicts = len(conflicts) > 0
 
         # Build agent output
         conflict_data = {
@@ -468,7 +566,7 @@ def conflict_detection_node(state: FamilySchedulerState) -> dict[str, Any]:
 
         confidence = 1.0  # Conflict detection is deterministic
         explanation = (
-            f"Detected {len(conflicts)} conflicts"
+            f"Detected {len(conflicts)} conflicts ({len(blocking_conflicts)} blocking)"
             if has_conflicts
             else "No conflicts detected"
         )
@@ -477,7 +575,7 @@ def conflict_detection_node(state: FamilySchedulerState) -> dict[str, Any]:
             "data": conflict_data,
             "confidence": confidence,
             "explanation": explanation,
-            "reasoning": "Checked time overlaps and participant availability",
+            "reasoning": "Queried calendar and checked time overlaps and participant availability",
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -667,8 +765,8 @@ def query_node(state: FamilySchedulerState) -> dict[str, Any]:
 
     This node:
     - Interprets query intent
-    - Retrieves relevant data
-    - Generates natural language response
+    - Retrieves actual events from calendar
+    - Generates natural language response with real data
 
     Returns partial state update with:
     - agent_outputs.query: Query results
@@ -679,41 +777,76 @@ def query_node(state: FamilySchedulerState) -> dict[str, Any]:
     logger.info(f"[{conv_id}] Executing Query node")
 
     try:
+        from src.services.calendar_service import get_calendar_service
+
         user_input = state.get("user_input", "")
         parsed_data = state.get("parsed_event_data", {})
 
-        # Use LLM to generate query response
+        # Get the calendar service and fetch events
+        calendar_service = get_calendar_service()
+
+        # Determine query time range (default: next 7 days)
+        query_start = datetime.now(timezone.utc)
+        query_end = query_start + timedelta(days=7)
+
+        # Fetch actual events from calendar
+        events = calendar_service.get_events_in_range(
+            start=query_start,
+            end=query_end,
+        )
+
+        # Format events for LLM context
+        events_summary = []
+        for event in events[:20]:  # Limit to 20 events for context
+            events_summary.append({
+                "title": event.title,
+                "start": event.start_time.strftime("%Y-%m-%d %H:%M"),
+                "end": event.end_time.strftime("%Y-%m-%d %H:%M"),
+                "location": event.location,
+                "attendees": event.attendees[:5],  # Limit attendees
+            })
+
+        # Use LLM to generate query response with actual calendar data
         llm = get_llm(temperature=0.7)
 
-        prompt = f"""You are a helpful family scheduling assistant.
-Answer the user's query about their schedule.
+        prompt = f"""You are a helpful family scheduling assistant with access to the family calendar.
 
 User query: {user_input}
 Parsed intent: {parsed_data}
 
-Provide a helpful, concise response. If you don't have enough information,
-explain what information would be needed.
+Here are the upcoming events from the family calendar (next 7 days):
+{events_summary if events_summary else "No events scheduled in the next 7 days."}
 
-Note: In a real implementation, you would have access to the family's
-calendar data. For now, provide a general helpful response."""
+Based on this actual calendar data, provide a helpful, concise response to the user's query.
+If asking about availability, check the events above for conflicts.
+If asking about specific events, look for matches in the events list.
+Be specific with dates and times when relevant."""
 
         response = llm.invoke(prompt)
         response_text = response.content if hasattr(response, "content") else str(response)
 
-        # Build query data
+        # Build query data with actual results
         query_data = {
-            "query_type": "availability",  # Simplified
-            "results": {"response": response_text},
+            "query_type": parsed_data.get("event_type", "query"),
+            "events_found": len(events),
+            "time_range": {
+                "start": query_start.isoformat(),
+                "end": query_end.isoformat(),
+            },
+            "results": {
+                "response": response_text,
+                "events": events_summary,
+            },
         }
 
-        confidence = 0.85
-        explanation = "Answered user query about schedule"
+        confidence = 0.9 if events else 0.85
+        explanation = f"Queried calendar ({len(events)} events) and answered user query"
 
         agent_output = {
             "data": query_data,
             "confidence": confidence,
             "explanation": explanation,
-            "reasoning": "Processed query and generated response",
+            "reasoning": "Retrieved actual calendar events and generated response",
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -725,7 +858,7 @@ calendar data. For now, provide a general helpful response."""
             explanation=explanation,
         )
 
-        logger.info(f"[{conv_id}] Query completed")
+        logger.info(f"[{conv_id}] Query completed: {len(events)} events found")
 
         return {
             "agent_outputs": {
@@ -765,12 +898,12 @@ def auto_confirm_node(state: FamilySchedulerState) -> dict[str, Any]:
     Auto-confirm event when no conflicts exist.
 
     This node:
-    - Creates the event in proposed state
+    - Creates the event in the calendar (Google Calendar or local database)
     - Sets workflow status to completed
     - Prepares confirmation response
 
     Returns partial state update with:
-    - proposed_event: The confirmed event
+    - proposed_event: The confirmed event with actual ID
     - audit_log: Appended audit entry
     - workflow_status: Set to "completed"
     """
@@ -778,22 +911,69 @@ def auto_confirm_node(state: FamilySchedulerState) -> dict[str, Any]:
     logger.info(f"[{conv_id}] Executing Auto Confirm node")
 
     try:
+        from src.services.calendar_service import get_calendar_service
+        from src.integrations.base import CreateEventRequest
+        from dateutil.parser import parse as parse_datetime
+
         parsed_data = state.get("parsed_event_data", {})
         selected_slot = state.get("selected_time_slot", {})
 
-        # Create proposed event
+        # Get times from selected slot or parsed data
+        start_time_str = selected_slot.get("start_time") or parsed_data.get("start_time")
+        end_time_str = selected_slot.get("end_time") or parsed_data.get("end_time")
+
+        # Parse times
+        if isinstance(start_time_str, str):
+            start_time = parse_datetime(start_time_str)
+        else:
+            start_time = start_time_str or datetime.now(timezone.utc)
+
+        if isinstance(end_time_str, str):
+            end_time = parse_datetime(end_time_str)
+        else:
+            end_time = end_time_str or (start_time + timedelta(hours=1))
+
+        # Ensure timezone awareness
+        if start_time.tzinfo is None:
+            start_time = start_time.replace(tzinfo=timezone.utc)
+        if end_time.tzinfo is None:
+            end_time = end_time.replace(tzinfo=timezone.utc)
+
+        # Build the event creation request
+        event_request = CreateEventRequest(
+            title=parsed_data.get("title", "Untitled Event"),
+            description=parsed_data.get("description"),
+            start_time=start_time,
+            end_time=end_time,
+            location=parsed_data.get("location"),
+            attendees=parsed_data.get("participants", []),
+            recurrence_rule=parsed_data.get("recurrence_rule"),
+            priority=parsed_data.get("priority", "medium"),
+            flexibility=parsed_data.get("flexibility", "fixed"),
+            created_by=state.get("user_id"),
+        )
+
+        # Create the event in the calendar
+        calendar_service = get_calendar_service()
+        created_event = calendar_service.create_event(event_request)
+
+        # Build proposed event response with actual ID from calendar
         proposed_event = {
-            "event_id": str(uuid.uuid4()),
-            "title": parsed_data.get("title", "Untitled Event"),
-            "start_time": selected_slot.get("start_time") or parsed_data.get("start_time"),
-            "end_time": selected_slot.get("end_time") or parsed_data.get("end_time"),
-            "participants": parsed_data.get("participants", []),
+            "event_id": created_event.id,
+            "title": created_event.title,
+            "description": created_event.description,
+            "start_time": created_event.start_time.isoformat(),
+            "end_time": created_event.end_time.isoformat(),
+            "location": created_event.location,
+            "participants": created_event.attendees,
             "resources": parsed_data.get("resources", []),
+            "recurrence_rule": created_event.recurrence_rule,
             "status": "confirmed",
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "calendar_id": created_event.calendar_id,
         }
 
-        explanation = f"Event '{proposed_event['title']}' confirmed"
+        explanation = f"Event '{proposed_event['title']}' created and confirmed"
 
         # Create audit entry
         audit_entry = _create_audit_entry(
@@ -803,7 +983,10 @@ def auto_confirm_node(state: FamilySchedulerState) -> dict[str, Any]:
             explanation=explanation,
         )
 
-        logger.info(f"[{conv_id}] Auto Confirm completed: {proposed_event['title']}")
+        logger.info(
+            f"[{conv_id}] Auto Confirm completed: "
+            f"{proposed_event['title']} (ID: {proposed_event['event_id']})"
+        )
 
         return {
             "proposed_event": proposed_event,
