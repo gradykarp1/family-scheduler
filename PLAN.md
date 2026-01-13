@@ -21,13 +21,16 @@
    - `src/api/response_builder.py` - State to API response transformation
    - `src/api/dependencies.py` - Dependency injection for orchestrator
    - `src/api/middleware.py` - Request logging with X-Request-ID tracking
+8. **Service Layer** - Business logic helpers with 75 tests
+   - `src/services/recurrence.py` - RRULE parsing and expansion (dateutil)
+   - `src/services/queries.py` - Event/calendar queries with eager loading
+   - `src/services/resources.py` - Resource availability checking
 
 ### Not Yet Implemented
 - Enhanced Agent Logic (more sophisticated prompts and database integration)
-- Service Layer (recurrence expansion, query helpers)
 - Integration Tests
 
-**Total Tests: 300 passing**
+**Total Tests: 375 passing**
 
 ---
 
@@ -74,12 +77,20 @@ Endpoints:
 - `POST /events/clarify` - Submit clarification
 - `POST /query` - Natural language calendar queries
 
-### Phase 4: Service Layer
-**Priority: Medium - helper functions for agents**
+### Phase 4: Service Layer ✅ COMPLETED
+**Status: Done - 75 tests passing**
 
-1. Create `src/services/recurrence.py` - RRULE expansion
-2. Create `src/services/queries.py` - Common query patterns with eager loading
-3. Create `src/services/resources.py` - Resource availability checking
+Implemented:
+- `src/services/recurrence.py` - RRULE parsing, expansion, validation (dateutil)
+- `src/services/queries.py` - Event/calendar queries with eager loading
+- `src/services/resources.py` - Resource availability checking
+
+Key functions:
+- `expand_recurrence()` - Expand RRULE into instances within time window
+- `get_events_in_range()` - Query events with eager-loaded relationships
+- `find_overlapping_events()` - Conflict detection support
+- `check_resource_availability()` - Check capacity and reservations
+- `find_available_slots()` - Find open time slots for resources
 
 ### Phase 5: Integration & Testing
 **Priority: Medium - ensure quality**

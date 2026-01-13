@@ -78,6 +78,26 @@ class Settings(BaseSettings):
         description="Enable auto-reload in development"
     )
 
+    # Calendar Provider
+    calendar_provider: Literal["google", "local"] = Field(
+        default="local",
+        description="Calendar storage backend (google or local database)"
+    )
+
+    # Google Calendar Configuration
+    google_calendar_id: str = Field(
+        default="",
+        description="Google Calendar ID for the family calendar"
+    )
+    google_service_account_file: str = Field(
+        default="",
+        description="Path to Google service account JSON key file"
+    )
+    google_service_account_json: str = Field(
+        default="",
+        description="Google service account JSON (alternative to file, for deployments)"
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -121,6 +141,33 @@ class Settings(BaseSettings):
             return self.openai_api_key
         else:
             raise ValueError(f"Unknown LLM provider: {self.llm_provider}")
+
+    @property
+    def uses_google_calendar(self) -> bool:
+        """Check if Google Calendar is the configured provider."""
+        return self.calendar_provider == "google"
+
+    def validate_google_calendar_config(self) -> None:
+        """
+        Validate Google Calendar configuration.
+
+        Raises:
+            ValueError: If required settings are missing
+        """
+        if not self.uses_google_calendar:
+            return
+
+        if not self.google_calendar_id:
+            raise ValueError(
+                "GOOGLE_CALENDAR_ID not configured. "
+                "Please set it in your .env file."
+            )
+
+        if not self.google_service_account_file and not self.google_service_account_json:
+            raise ValueError(
+                "Google Calendar requires authentication. "
+                "Set either GOOGLE_SERVICE_ACCOUNT_FILE or GOOGLE_SERVICE_ACCOUNT_JSON."
+            )
 
 
 @lru_cache()
