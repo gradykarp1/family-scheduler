@@ -36,6 +36,7 @@ from src.api.dependencies import (
 )
 from src.api.middleware import RequestLoggingMiddleware
 from src.api.auth_routes import router as auth_router
+from src.api.webhook_routes import router as webhook_router
 from src.orchestrator import initialize_state, invoke_orchestrator
 
 logger = logging.getLogger(__name__)
@@ -119,6 +120,7 @@ app.add_middleware(RequestLoggingMiddleware)
 
 # Include routers
 app.include_router(auth_router)
+app.include_router(webhook_router)
 
 
 # =============================================================================
@@ -233,7 +235,8 @@ async def create_event(
     Create event from natural language.
 
     Invokes the orchestrator to process the natural language request
-    through specialized agents.
+    through specialized agents. Triggers webhook notifications when
+    events are auto-confirmed.
     """
     user_id = resolve_user_id(request.user_id, x_user_id)
 
@@ -241,7 +244,7 @@ async def create_event(
 
     try:
         # Initialize state and invoke orchestrator
-        state = initialize_state(
+        initial_state = initialize_state(
             user_input=request.message,
             user_id=user_id,
             conversation_id=request.conversation_id,
@@ -254,7 +257,20 @@ async def create_event(
             conversation_id=request.conversation_id,
         )
 
-        return build_response(final_state)
+        response = build_response(final_state)
+
+        # Trigger webhooks if event was auto-confirmed
+        if response.result.auto_confirmed and response.result.event:
+            try:
+                from src.services.webhook_service import trigger_event_created
+                from src.database import get_async_db_context
+
+                async with get_async_db_context() as session:
+                    await trigger_event_created(user_id, response.result.event, session)
+            except Exception as e:
+                logger.warning(f"Failed to trigger webhooks for event creation: {e}")
+
+        return response
 
     except Exception as e:
         logger.error(f"Failed to create event: {e}", exc_info=True)
@@ -480,6 +496,7 @@ async def delete_event(
     Delete an event from user's Google Calendar.
 
     Requires user to have completed OAuth authorization.
+    Triggers webhook notifications for subscribed endpoints.
     """
     from src.services.calendar_service import get_user_calendar_service
 
@@ -501,6 +518,16 @@ async def delete_event(
             raise HTTPException(status_code=404, detail=f"Event {event_id} not found")
 
         logger.info(f"Deleted event {event_id} for user {user_id}")
+
+        # Trigger webhooks (fire and forget - don't block response)
+        try:
+            from src.services.webhook_service import trigger_event_deleted
+            from src.database import get_async_db_context
+
+            async with get_async_db_context() as session:
+                await trigger_event_deleted(user_id, event_id, session)
+        except Exception as e:
+            logger.warning(f"Failed to trigger webhooks for event deletion: {e}")
 
         return DeleteEventResponse(
             success=True,

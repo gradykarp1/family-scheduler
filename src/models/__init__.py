@@ -20,6 +20,7 @@ from src.models.family import FamilyMember, Calendar
 from src.models.resources import Resource
 from src.models.constraints import Constraint
 from src.models.tokens import UserToken
+from src.models.webhooks import Webhook
 
 # Export all for easy importing
 __all__ = [
@@ -37,4 +38,6 @@ __all__ = [
     "Constraint",
     # Authentication
     "UserToken",
+    # Webhooks
+    "Webhook",
 ]
