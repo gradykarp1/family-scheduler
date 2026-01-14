@@ -211,41 +211,23 @@ class TestJSONColumnFactory:
 
     def test_json_empty_dict_default(self, db_session: Session):
         """Test that JSON fields with dict default work correctly."""
-        from src.models.events import Event
+        from src.models.resources import Resource
 
-        member = FamilyMember(name="Creator", role="parent", preferences={})
-        db_session.add(member)
-        db_session.commit()
-
-        # Create event without explicit metadata
-        from src.models.family import Calendar
-        calendar = Calendar(
-            name="Test Calendar",
-            calendar_type="personal",
-            owner_id=member.id,
-            visibility="private"
+        # Create resource without explicit metadata
+        resource = Resource(
+            name="Test Resource",
+            resource_type="equipment",
+            capacity=1,
+            active=True
+            # resource_metadata should default to {}
         )
-        db_session.add(calendar)
+        db_session.add(resource)
         db_session.commit()
-
-        event = Event(
-            calendar_id=calendar.id,
-            title="Test Event",
-            start_time=datetime(2026, 1, 15, 10, 0, tzinfo=timezone.utc),
-            end_time=datetime(2026, 1, 15, 11, 0, tzinfo=timezone.utc),
-            status="proposed",
-            priority="medium",
-            flexibility="fixed",
-            created_by=member.id
-            # event_metadata should default to {}
-        )
-        db_session.add(event)
-        db_session.commit()
-        db_session.refresh(event)
+        db_session.refresh(resource)
 
         # Should default to empty dict
-        assert event.event_metadata == {}
-        assert isinstance(event.event_metadata, dict)
+        assert resource.resource_metadata == {}
+        assert isinstance(resource.resource_metadata, dict)
 
     def test_json_mutation_tracking(self, db_session: Session):
         """Test that JSON field changes persist when reassigning the entire dict."""

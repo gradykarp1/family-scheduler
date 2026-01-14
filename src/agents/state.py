@@ -160,6 +160,8 @@ class ProposedResolution(BaseModel):
         "cancel_event",
         "override_constraint",
         "alternative_resource",
+        "swap_participants",
+        "suggest_virtual",
     ]
     score: float
     description: str
@@ -184,6 +186,104 @@ class QueryData(BaseModel):
 
     query_type: Literal["availability", "event_lookup", "resource_status", "conflict_check"]
     results: dict  # Flexible results based on query type
+
+
+# ============================================================================
+# Structured LLM Output Models (for with_structured_output)
+# ============================================================================
+
+
+class NLParserOutput(BaseModel):
+    """
+    Structured output model for NL Parser with LangChain's with_structured_output().
+
+    This model is used to guarantee valid JSON output from the LLM.
+    """
+
+    event_type: Literal["create", "modify", "cancel", "query"] = Field(
+        description="The type of scheduling action requested"
+    )
+    title: Optional[str] = Field(
+        default=None, description="Event title extracted from input"
+    )
+    start_time: Optional[str] = Field(
+        default=None, description="Event start time in ISO 8601 format"
+    )
+    end_time: Optional[str] = Field(
+        default=None, description="Event end time in ISO 8601 format"
+    )
+    participants: list[str] = Field(
+        default_factory=list, description="List of participant names mentioned"
+    )
+    resources: list[str] = Field(
+        default_factory=list, description="List of resources needed (car, room, etc.)"
+    )
+    priority: Optional[Literal["low", "medium", "high"]] = Field(
+        default=None, description="Event priority level if mentioned"
+    )
+    flexibility: Optional[Literal["fixed", "flexible", "very_flexible"]] = Field(
+        default=None, description="How flexible the timing is"
+    )
+    recurrence_rule: Optional[str] = Field(
+        default=None, description="RRULE string for recurring events"
+    )
+
+
+class ResolutionChangeOutput(BaseModel):
+    """Structured change in a resolution for LLM output."""
+
+    event_id: Optional[str] = Field(
+        default=None, description="ID of event being changed"
+    )
+    field: str = Field(
+        description="Field being modified (start_time, end_time, participants, etc.)"
+    )
+    old_value: Optional[str] = Field(default=None, description="Original value if known")
+    new_value: str = Field(description="New proposed value")
+
+
+class ProposedResolutionOutput(BaseModel):
+    """Structured resolution option for LLM output."""
+
+    resolution_id: str = Field(description="Unique identifier for this resolution")
+    strategy: Literal[
+        "move_event",
+        "shorten_event",
+        "split_event",
+        "cancel_event",
+        "override_constraint",
+        "alternative_resource",
+        "swap_participants",
+        "suggest_virtual",
+    ] = Field(description="The resolution strategy being proposed")
+    score: float = Field(
+        ge=0.0, le=1.0, description="Desirability score from 0.0 to 1.0"
+    )
+    description: str = Field(
+        description="Human-readable description of the resolution"
+    )
+    changes: list[ResolutionChangeOutput] = Field(
+        default_factory=list, description="List of changes this resolution requires"
+    )
+    conflicts_resolved: list[str] = Field(
+        default_factory=list, description="IDs of conflicts this resolution addresses"
+    )
+    side_effects: list[str] = Field(
+        default_factory=list,
+        description="Potential negative side effects of this resolution",
+    )
+
+
+class ResolutionOutput(BaseModel):
+    """Complete structured output for Resolution Agent with LLM."""
+
+    proposed_resolutions: list[ProposedResolutionOutput] = Field(
+        description="List of 1-4 proposed resolution options"
+    )
+    recommended_resolution: str = Field(
+        description="Resolution ID of the recommended option"
+    )
+    analysis_summary: str = Field(description="Brief summary of the conflict analysis")
 
 
 # ============================================================================

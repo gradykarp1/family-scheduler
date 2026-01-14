@@ -1,245 +1,25 @@
 """
-Query service for events and calendars.
+Query service for family configuration data.
 
-Provides common query patterns with:
-- Eager loading to avoid N+1 queries
-- Time-range filtering
-- Soft deletion handling
-- Conflict detection queries
+Provides common query patterns for:
+- Family members and their preferences
+- Calendars and their configuration
+- Resources and their metadata
+- Constraints
+
+Note: Events are stored in Google Calendar, not the local database.
+Use CalendarService for event queries.
 """
 
-from datetime import datetime
 from typing import Optional, Sequence
 from uuid import UUID
 
-from sqlalchemy import select, and_, or_
+from sqlalchemy import select, and_
 from sqlalchemy.orm import Session, selectinload, joinedload
 
-from src.models.events import Event, EventParticipant
 from src.models.family import FamilyMember, Calendar
-from src.models.resources import Resource, ResourceReservation
-from src.models.conflicts import Conflict
-
-
-# =============================================================================
-# Event Queries
-# =============================================================================
-
-
-def get_events_in_range(
-    session: Session,
-    calendar_id: UUID,
-    start: datetime,
-    end: datetime,
-    include_proposed: bool = True,
-    include_cancelled: bool = False,
-) -> Sequence[Event]:
-    """
-    Get all events within a time range for a calendar.
-
-    Args:
-        session: Database session
-        calendar_id: Calendar to query
-        start: Range start (inclusive)
-        end: Range end (inclusive)
-        include_proposed: Include proposed (unconfirmed) events
-        include_cancelled: Include cancelled events
-
-    Returns:
-        List of events with participants and reservations eagerly loaded
-    """
-    # Build status filter
-    statuses = ["confirmed"]
-    if include_proposed:
-        statuses.append("proposed")
-    if include_cancelled:
-        statuses.append("cancelled")
-
-    stmt = (
-        select(Event)
-        .where(
-            and_(
-                Event.calendar_id == calendar_id,
-                Event.deleted_at.is_(None),
-                Event.status.in_(statuses),
-                # Events that overlap with the range
-                Event.start_time < end,
-                Event.end_time > start,
-            )
-        )
-        .options(
-            selectinload(Event.participants).selectinload(EventParticipant.family_member),
-            selectinload(Event.resource_reservations).selectinload(ResourceReservation.resource),
-        )
-        .order_by(Event.start_time)
-    )
-
-    return session.scalars(stmt).all()
-
-
-def get_events_for_member(
-    session: Session,
-    member_id: UUID,
-    start: datetime,
-    end: datetime,
-    include_proposed: bool = True,
-) -> Sequence[Event]:
-    """
-    Get all events a family member is participating in within a time range.
-
-    Args:
-        session: Database session
-        member_id: Family member ID
-        start: Range start
-        end: Range end
-        include_proposed: Include proposed events
-
-    Returns:
-        List of events the member is participating in
-    """
-    statuses = ["confirmed"]
-    if include_proposed:
-        statuses.append("proposed")
-
-    stmt = (
-        select(Event)
-        .join(EventParticipant)
-        .where(
-            and_(
-                EventParticipant.family_member_id == member_id,
-                Event.deleted_at.is_(None),
-                Event.status.in_(statuses),
-                Event.start_time < end,
-                Event.end_time > start,
-            )
-        )
-        .options(
-            selectinload(Event.participants),
-            selectinload(Event.calendar),
-        )
-        .order_by(Event.start_time)
-    )
-
-    return session.scalars(stmt).all()
-
-
-def get_event_by_id(
-    session: Session,
-    event_id: UUID,
-    include_deleted: bool = False,
-) -> Optional[Event]:
-    """
-    Get a single event by ID with all relationships loaded.
-
-    Args:
-        session: Database session
-        event_id: Event ID
-        include_deleted: Include soft-deleted events
-
-    Returns:
-        Event or None
-    """
-    conditions = [Event.id == event_id]
-    if not include_deleted:
-        conditions.append(Event.deleted_at.is_(None))
-
-    stmt = (
-        select(Event)
-        .where(and_(*conditions))
-        .options(
-            selectinload(Event.participants).selectinload(EventParticipant.family_member),
-            selectinload(Event.resource_reservations).selectinload(ResourceReservation.resource),
-            joinedload(Event.calendar),
-            joinedload(Event.creator),
-        )
-    )
-
-    return session.scalar(stmt)
-
-
-def find_overlapping_events(
-    session: Session,
-    calendar_id: UUID,
-    start: datetime,
-    end: datetime,
-    exclude_event_id: Optional[UUID] = None,
-) -> Sequence[Event]:
-    """
-    Find events that overlap with a given time range.
-
-    Used for conflict detection.
-
-    Args:
-        session: Database session
-        calendar_id: Calendar to check
-        start: Proposed start time
-        end: Proposed end time
-        exclude_event_id: Event to exclude (for updates)
-
-    Returns:
-        List of overlapping events
-    """
-    conditions = [
-        Event.calendar_id == calendar_id,
-        Event.deleted_at.is_(None),
-        Event.status.in_(["confirmed", "proposed"]),
-        # Overlap condition: event starts before we end AND ends after we start
-        Event.start_time < end,
-        Event.end_time > start,
-    ]
-
-    if exclude_event_id:
-        conditions.append(Event.id != exclude_event_id)
-
-    stmt = (
-        select(Event)
-        .where(and_(*conditions))
-        .options(selectinload(Event.participants))
-        .order_by(Event.start_time)
-    )
-
-    return session.scalars(stmt).all()
-
-
-def get_upcoming_events(
-    session: Session,
-    calendar_id: UUID,
-    limit: int = 10,
-    after: Optional[datetime] = None,
-) -> Sequence[Event]:
-    """
-    Get upcoming events for a calendar.
-
-    Args:
-        session: Database session
-        calendar_id: Calendar to query
-        limit: Maximum events to return
-        after: Start from this time (default: now)
-
-    Returns:
-        List of upcoming events
-    """
-    if after is None:
-        after = datetime.utcnow()
-
-    stmt = (
-        select(Event)
-        .where(
-            and_(
-                Event.calendar_id == calendar_id,
-                Event.deleted_at.is_(None),
-                Event.status == "confirmed",
-                Event.start_time >= after,
-            )
-        )
-        .options(
-            selectinload(Event.participants).selectinload(EventParticipant.family_member),
-        )
-        .order_by(Event.start_time)
-        .limit(limit)
-    )
-
-    return session.scalars(stmt).all()
+from src.models.resources import Resource
+from src.models.constraints import Constraint
 
 
 # =============================================================================
@@ -247,126 +27,138 @@ def get_upcoming_events(
 # =============================================================================
 
 
-def get_member_schedule(
+def get_all_family_members(
+    session: Session,
+    include_deleted: bool = False,
+) -> Sequence[FamilyMember]:
+    """
+    Get all family members.
+
+    Args:
+        session: Database session
+        include_deleted: Include soft-deleted members
+
+    Returns:
+        List of family members with calendars loaded
+    """
+    conditions = []
+    if not include_deleted:
+        conditions.append(FamilyMember.deleted_at.is_(None))
+
+    stmt = (
+        select(FamilyMember)
+        .where(and_(*conditions)) if conditions else select(FamilyMember)
+    )
+
+    if conditions:
+        stmt = (
+            select(FamilyMember)
+            .where(and_(*conditions))
+            .options(
+                selectinload(FamilyMember.owned_calendars),
+                joinedload(FamilyMember.default_calendar),
+            )
+            .order_by(FamilyMember.name)
+        )
+    else:
+        stmt = (
+            select(FamilyMember)
+            .options(
+                selectinload(FamilyMember.owned_calendars),
+                joinedload(FamilyMember.default_calendar),
+            )
+            .order_by(FamilyMember.name)
+        )
+
+    return session.scalars(stmt).all()
+
+
+def get_family_member_by_id(
     session: Session,
     member_id: UUID,
-    date: datetime,
-) -> Sequence[Event]:
+    include_deleted: bool = False,
+) -> Optional[FamilyMember]:
     """
-    Get a family member's schedule for a specific day.
+    Get a family member by ID.
 
     Args:
         session: Database session
         member_id: Family member ID
-        date: Date to query (uses date part only)
+        include_deleted: Include soft-deleted members
 
     Returns:
-        List of events for that day
+        FamilyMember or None
     """
-    day_start = datetime(date.year, date.month, date.day, 0, 0, 0)
-    day_end = datetime(date.year, date.month, date.day, 23, 59, 59)
-
-    return get_events_for_member(session, member_id, day_start, day_end)
-
-
-def find_busy_members(
-    session: Session,
-    member_ids: list[UUID],
-    start: datetime,
-    end: datetime,
-) -> list[UUID]:
-    """
-    Find which members are busy during a time slot.
-
-    Args:
-        session: Database session
-        member_ids: Members to check
-        start: Time slot start
-        end: Time slot end
-
-    Returns:
-        List of member IDs who have conflicts
-    """
-    stmt = (
-        select(EventParticipant.family_member_id)
-        .join(Event)
-        .where(
-            and_(
-                EventParticipant.family_member_id.in_(member_ids),
-                Event.deleted_at.is_(None),
-                Event.status.in_(["confirmed", "proposed"]),
-                Event.start_time < end,
-                Event.end_time > start,
-            )
-        )
-        .distinct()
-    )
-
-    return list(session.scalars(stmt).all())
-
-
-def find_available_members(
-    session: Session,
-    member_ids: list[UUID],
-    start: datetime,
-    end: datetime,
-) -> list[UUID]:
-    """
-    Find which members are available during a time slot.
-
-    Args:
-        session: Database session
-        member_ids: Members to check
-        start: Time slot start
-        end: Time slot end
-
-    Returns:
-        List of available member IDs
-    """
-    busy = set(find_busy_members(session, member_ids, start, end))
-    return [mid for mid in member_ids if mid not in busy]
-
-
-# =============================================================================
-# Conflict Queries
-# =============================================================================
-
-
-def get_unresolved_conflicts(
-    session: Session,
-    event_id: Optional[UUID] = None,
-) -> Sequence[Conflict]:
-    """
-    Get unresolved conflicts, optionally for a specific event.
-
-    Args:
-        session: Database session
-        event_id: Optional event to filter by
-
-    Returns:
-        List of unresolved conflicts
-    """
-    conditions = [
-        Conflict.deleted_at.is_(None),
-        Conflict.status == "detected",  # Unresolved conflicts have status 'detected'
-    ]
-
-    if event_id:
-        conditions.append(
-            or_(
-                Conflict.proposed_event_id == event_id,
-                Conflict.conflicting_event_id == event_id,
-            )
-        )
+    conditions = [FamilyMember.id == member_id]
+    if not include_deleted:
+        conditions.append(FamilyMember.deleted_at.is_(None))
 
     stmt = (
-        select(Conflict)
+        select(FamilyMember)
         .where(and_(*conditions))
         .options(
-            joinedload(Conflict.proposed_event),
-            joinedload(Conflict.conflicting_event),
+            selectinload(FamilyMember.owned_calendars),
+            joinedload(FamilyMember.default_calendar),
+            selectinload(FamilyMember.constraints),
         )
-        .order_by(Conflict.created_at.desc())
+    )
+
+    return session.scalar(stmt)
+
+
+def get_family_member_by_email(
+    session: Session,
+    email: str,
+) -> Optional[FamilyMember]:
+    """
+    Get a family member by email address.
+
+    Args:
+        session: Database session
+        email: Email address
+
+    Returns:
+        FamilyMember or None
+    """
+    stmt = (
+        select(FamilyMember)
+        .where(
+            and_(
+                FamilyMember.email == email,
+                FamilyMember.deleted_at.is_(None),
+            )
+        )
+        .options(
+            joinedload(FamilyMember.default_calendar),
+        )
+    )
+
+    return session.scalar(stmt)
+
+
+def get_family_members_by_role(
+    session: Session,
+    role: str,
+) -> Sequence[FamilyMember]:
+    """
+    Get family members by role (parent, child, other).
+
+    Args:
+        session: Database session
+        role: Role to filter by
+
+    Returns:
+        List of family members with that role
+    """
+    stmt = (
+        select(FamilyMember)
+        .where(
+            and_(
+                FamilyMember.role == role,
+                FamilyMember.deleted_at.is_(None),
+            )
+        )
+        .order_by(FamilyMember.name)
     )
 
     return session.scalars(stmt).all()
@@ -375,6 +167,41 @@ def get_unresolved_conflicts(
 # =============================================================================
 # Calendar Queries
 # =============================================================================
+
+
+def get_all_calendars(
+    session: Session,
+    include_deleted: bool = False,
+) -> Sequence[Calendar]:
+    """
+    Get all calendars.
+
+    Args:
+        session: Database session
+        include_deleted: Include soft-deleted calendars
+
+    Returns:
+        List of calendars with owners loaded
+    """
+    conditions = []
+    if not include_deleted:
+        conditions.append(Calendar.deleted_at.is_(None))
+
+    if conditions:
+        stmt = (
+            select(Calendar)
+            .where(and_(*conditions))
+            .options(joinedload(Calendar.owner))
+            .order_by(Calendar.name)
+        )
+    else:
+        stmt = (
+            select(Calendar)
+            .options(joinedload(Calendar.owner))
+            .order_by(Calendar.name)
+        )
+
+    return session.scalars(stmt).all()
 
 
 def get_calendars_by_owner(
@@ -411,7 +238,7 @@ def get_calendar_by_id(
     calendar_id: UUID,
 ) -> Optional[Calendar]:
     """
-    Get a calendar by ID with events count.
+    Get a calendar by ID.
 
     Args:
         session: Database session
@@ -434,3 +261,251 @@ def get_calendar_by_id(
     )
 
     return session.scalar(stmt)
+
+
+def get_calendar_by_google_id(
+    session: Session,
+    google_calendar_id: str,
+) -> Optional[Calendar]:
+    """
+    Get a calendar by its Google Calendar ID.
+
+    Args:
+        session: Database session
+        google_calendar_id: Google Calendar ID
+
+    Returns:
+        Calendar or None
+    """
+    stmt = (
+        select(Calendar)
+        .where(
+            and_(
+                Calendar.google_calendar_id == google_calendar_id,
+                Calendar.deleted_at.is_(None),
+            )
+        )
+        .options(
+            joinedload(Calendar.owner),
+        )
+    )
+
+    return session.scalar(stmt)
+
+
+def get_calendars_by_type(
+    session: Session,
+    calendar_type: str,
+) -> Sequence[Calendar]:
+    """
+    Get calendars by type (personal, family, shared).
+
+    Args:
+        session: Database session
+        calendar_type: Calendar type to filter by
+
+    Returns:
+        List of calendars of that type
+    """
+    stmt = (
+        select(Calendar)
+        .where(
+            and_(
+                Calendar.calendar_type == calendar_type,
+                Calendar.deleted_at.is_(None),
+            )
+        )
+        .options(joinedload(Calendar.owner))
+        .order_by(Calendar.name)
+    )
+
+    return session.scalars(stmt).all()
+
+
+# =============================================================================
+# Resource Queries
+# =============================================================================
+
+
+def get_all_resources(
+    session: Session,
+    active_only: bool = True,
+) -> Sequence[Resource]:
+    """
+    Get all resources.
+
+    Args:
+        session: Database session
+        active_only: Only return active resources
+
+    Returns:
+        List of resources
+    """
+    conditions = [Resource.deleted_at.is_(None)]
+    if active_only:
+        conditions.append(Resource.active.is_(True))
+
+    stmt = (
+        select(Resource)
+        .where(and_(*conditions))
+        .order_by(Resource.name)
+    )
+
+    return session.scalars(stmt).all()
+
+
+def get_resource_by_id(
+    session: Session,
+    resource_id: UUID,
+) -> Optional[Resource]:
+    """
+    Get a resource by ID.
+
+    Args:
+        session: Database session
+        resource_id: Resource ID
+
+    Returns:
+        Resource or None
+    """
+    stmt = (
+        select(Resource)
+        .where(
+            and_(
+                Resource.id == resource_id,
+                Resource.deleted_at.is_(None),
+            )
+        )
+    )
+
+    return session.scalar(stmt)
+
+
+def get_resources_by_type(
+    session: Session,
+    resource_type: str,
+    active_only: bool = True,
+) -> Sequence[Resource]:
+    """
+    Get resources by type (vehicle, room, equipment, other).
+
+    Args:
+        session: Database session
+        resource_type: Resource type to filter by
+        active_only: Only return active resources
+
+    Returns:
+        List of resources of that type
+    """
+    conditions = [
+        Resource.resource_type == resource_type,
+        Resource.deleted_at.is_(None),
+    ]
+    if active_only:
+        conditions.append(Resource.active.is_(True))
+
+    stmt = (
+        select(Resource)
+        .where(and_(*conditions))
+        .order_by(Resource.name)
+    )
+
+    return session.scalars(stmt).all()
+
+
+# =============================================================================
+# Constraint Queries
+# =============================================================================
+
+
+def get_all_constraints(
+    session: Session,
+    active_only: bool = True,
+) -> Sequence[Constraint]:
+    """
+    Get all constraints.
+
+    Args:
+        session: Database session
+        active_only: Only return active constraints
+
+    Returns:
+        List of constraints with family members loaded
+    """
+    conditions = [Constraint.deleted_at.is_(None)]
+    if active_only:
+        conditions.append(Constraint.active.is_(True))
+
+    stmt = (
+        select(Constraint)
+        .where(and_(*conditions))
+        .options(joinedload(Constraint.family_member))
+        .order_by(Constraint.priority.desc())
+    )
+
+    return session.scalars(stmt).all()
+
+
+def get_constraints_for_member(
+    session: Session,
+    member_id: UUID,
+    active_only: bool = True,
+) -> Sequence[Constraint]:
+    """
+    Get all constraints for a specific family member.
+
+    Args:
+        session: Database session
+        member_id: Family member ID
+        active_only: Only return active constraints
+
+    Returns:
+        List of constraints for that member
+    """
+    conditions = [
+        Constraint.family_member_id == member_id,
+        Constraint.deleted_at.is_(None),
+    ]
+    if active_only:
+        conditions.append(Constraint.active.is_(True))
+
+    stmt = (
+        select(Constraint)
+        .where(and_(*conditions))
+        .order_by(Constraint.priority.desc())
+    )
+
+    return session.scalars(stmt).all()
+
+
+def get_constraints_by_type(
+    session: Session,
+    constraint_type: str,
+    active_only: bool = True,
+) -> Sequence[Constraint]:
+    """
+    Get constraints by type.
+
+    Args:
+        session: Database session
+        constraint_type: Constraint type to filter by
+        active_only: Only return active constraints
+
+    Returns:
+        List of constraints of that type
+    """
+    conditions = [
+        Constraint.constraint_type == constraint_type,
+        Constraint.deleted_at.is_(None),
+    ]
+    if active_only:
+        conditions.append(Constraint.active.is_(True))
+
+    stmt = (
+        select(Constraint)
+        .where(and_(*conditions))
+        .options(joinedload(Constraint.family_member))
+        .order_by(Constraint.priority.desc())
+    )
+
+    return session.scalars(stmt).all()

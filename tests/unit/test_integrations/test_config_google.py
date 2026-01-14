@@ -9,9 +9,14 @@ from src.config import Settings
 class TestCalendarProviderSettings:
     """Tests for calendar provider configuration."""
 
-    def test_default_provider_is_local(self):
-        """Should default to local storage."""
-        settings = Settings()
+    def test_default_provider_is_local(self, monkeypatch):
+        """Should default to local storage when env vars are cleared."""
+        # Clear environment variables that would be loaded from .env
+        monkeypatch.delenv("CALENDAR_PROVIDER", raising=False)
+        monkeypatch.delenv("GOOGLE_CALENDAR_ID", raising=False)
+        monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_FILE", raising=False)
+        monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_JSON", raising=False)
+        settings = Settings(_env_file=None)
         assert settings.calendar_provider == "local"
         assert settings.uses_google_calendar is False
 
@@ -30,9 +35,14 @@ class TestCalendarProviderSettings:
 class TestGoogleCalendarSettings:
     """Tests for Google Calendar specific settings."""
 
-    def test_default_empty_values(self):
-        """Should have empty defaults for Google settings."""
-        settings = Settings()
+    def test_default_empty_values(self, monkeypatch):
+        """Should have empty defaults for Google settings when env vars are cleared."""
+        # Clear environment variables that would be loaded from .env
+        monkeypatch.delenv("CALENDAR_PROVIDER", raising=False)
+        monkeypatch.delenv("GOOGLE_CALENDAR_ID", raising=False)
+        monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_FILE", raising=False)
+        monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_JSON", raising=False)
+        settings = Settings(_env_file=None)
         assert settings.google_calendar_id == ""
         assert settings.google_service_account_file == ""
         assert settings.google_service_account_json == ""
@@ -57,11 +67,15 @@ class TestValidateGoogleCalendarConfig:
         # Should not raise
         settings.validate_google_calendar_config()
 
-    def test_missing_calendar_id(self):
+    def test_missing_calendar_id(self, monkeypatch):
         """Should raise error if calendar ID missing for Google provider."""
+        # Clear environment variables that would be loaded from .env
+        monkeypatch.delenv("GOOGLE_CALENDAR_ID", raising=False)
+        monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_JSON", raising=False)
         settings = Settings(
             calendar_provider="google",
             google_service_account_file="/path/to/key.json",
+            _env_file=None,
         )
 
         with pytest.raises(ValueError) as exc_info:
@@ -69,11 +83,15 @@ class TestValidateGoogleCalendarConfig:
 
         assert "GOOGLE_CALENDAR_ID not configured" in str(exc_info.value)
 
-    def test_missing_authentication(self):
+    def test_missing_authentication(self, monkeypatch):
         """Should raise error if no auth method configured."""
+        # Clear environment variables that would be loaded from .env
+        monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_FILE", raising=False)
+        monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_JSON", raising=False)
         settings = Settings(
             calendar_provider="google",
             google_calendar_id="family@group.calendar.google.com",
+            _env_file=None,
         )
 
         with pytest.raises(ValueError) as exc_info:

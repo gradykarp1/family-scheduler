@@ -2,9 +2,11 @@
 Resource availability service.
 
 Provides functions for:
-- Checking resource availability
-- Finding available time slots
-- Managing resource reservations
+- Querying resources from the database
+- Checking resource availability via Google Calendar (if configured)
+
+Note: Resource reservations are tracked via Google Calendar.
+Each resource can have a google_calendar_id for availability tracking.
 """
 
 from datetime import datetime, timedelta
@@ -12,10 +14,10 @@ from typing import Optional, Sequence
 from uuid import UUID
 from dataclasses import dataclass
 
-from sqlalchemy import select, and_, func
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import select, and_
+from sqlalchemy.orm import Session
 
-from src.models.resources import Resource, ResourceReservation
+from src.models.resources import Resource
 
 
 @dataclass
@@ -36,7 +38,118 @@ class ResourceAvailability:
     total_capacity: int
     is_available: bool
     available_capacity: int
-    conflicting_reservations: list[ResourceReservation]
+    has_calendar: bool  # True if resource has a Google Calendar for tracking
+
+
+def get_resource_by_id(
+    session: Session,
+    resource_id: UUID,
+) -> Optional[Resource]:
+    """
+    Get a resource by ID.
+
+    Args:
+        session: Database session
+        resource_id: Resource ID
+
+    Returns:
+        Resource or None
+    """
+    resource = session.get(Resource, resource_id)
+    if resource and resource.deleted_at is None:
+        return resource
+    return None
+
+
+def get_all_resources(
+    session: Session,
+    active_only: bool = True,
+) -> Sequence[Resource]:
+    """
+    Get all resources.
+
+    Args:
+        session: Database session
+        active_only: Only return active resources
+
+    Returns:
+        List of resources
+    """
+    conditions = [Resource.deleted_at.is_(None)]
+    if active_only:
+        conditions.append(Resource.active.is_(True))
+
+    stmt = (
+        select(Resource)
+        .where(and_(*conditions))
+        .order_by(Resource.name)
+    )
+
+    return session.scalars(stmt).all()
+
+
+def get_resources_by_type(
+    session: Session,
+    resource_type: str,
+    active_only: bool = True,
+) -> Sequence[Resource]:
+    """
+    Get all resources of a specific type.
+
+    Args:
+        session: Database session
+        resource_type: Type to filter by (vehicle, room, equipment, other)
+        active_only: Only return active resources
+
+    Returns:
+        List of resources
+    """
+    conditions = [
+        Resource.deleted_at.is_(None),
+        Resource.resource_type == resource_type,
+    ]
+
+    if active_only:
+        conditions.append(Resource.active.is_(True))
+
+    stmt = (
+        select(Resource)
+        .where(and_(*conditions))
+        .order_by(Resource.name)
+    )
+
+    return session.scalars(stmt).all()
+
+
+def find_resources_with_calendar(
+    session: Session,
+    active_only: bool = True,
+) -> Sequence[Resource]:
+    """
+    Find resources that have a Google Calendar for availability tracking.
+
+    Args:
+        session: Database session
+        active_only: Only return active resources
+
+    Returns:
+        List of resources with google_calendar_id set
+    """
+    conditions = [
+        Resource.deleted_at.is_(None),
+        Resource.google_calendar_id.isnot(None),
+    ]
+
+    if active_only:
+        conditions.append(Resource.active.is_(True))
+
+    stmt = (
+        select(Resource)
+        .where(and_(*conditions))
+        .order_by(Resource.name)
+    )
+
+    return session.scalars(stmt).all()
 
 
 def check_resource_availability(
@@ -45,12 +158,13 @@ def check_resource_availability(
     start: datetime,
     end: datetime,
     quantity_needed: int = 1,
-    exclude_reservation_id: Optional[UUID] = None,
 ) -> ResourceAvailability:
     """
     Check if a resource is available during a time range.
 
-    Handles resources with capacity > 1 (shared resources).
+    For resources with a google_calendar_id, use CalendarService to check
+    actual availability via Google Calendar. For resources without a calendar,
+    this returns basic availability based on the resource being active.
 
     Args:
         session: Database session
@@ -58,55 +172,60 @@ def check_resource_availability(
         start: Requested start time
         end: Requested end time
         quantity_needed: How much capacity is needed
-        exclude_reservation_id: Reservation to exclude (for updates)
 
     Returns:
         ResourceAvailability with availability info
     """
-    # Get the resource
-    resource = session.get(Resource, resource_id)
-    if not resource or resource.deleted_at or not resource.active:
+    resource = get_resource_by_id(session, resource_id)
+
+    if not resource or not resource.active:
         return ResourceAvailability(
             resource_id=resource_id,
             resource_name=resource.name if resource else "Unknown",
             total_capacity=0,
             is_available=False,
             available_capacity=0,
-            conflicting_reservations=[],
+            has_calendar=False,
         )
 
-    # Find overlapping reservations
-    conditions = [
-        ResourceReservation.resource_id == resource_id,
-        ResourceReservation.deleted_at.is_(None),
-        ResourceReservation.status.in_(["confirmed", "proposed"]),
-        ResourceReservation.start_time < end,
-        ResourceReservation.end_time > start,
-    ]
+    has_calendar = resource.google_calendar_id is not None
 
-    if exclude_reservation_id:
-        conditions.append(ResourceReservation.id != exclude_reservation_id)
+    # If resource has a calendar, check Google Calendar for availability
+    if has_calendar:
+        try:
+            from src.services.calendar_service import get_calendar_service
 
-    stmt = (
-        select(ResourceReservation)
-        .where(and_(*conditions))
-        .options(joinedload(ResourceReservation.event))
-        .order_by(ResourceReservation.start_time)
-    )
+            calendar_service = get_calendar_service()
+            busy_slots = calendar_service.find_free_busy(
+                [resource.google_calendar_id],
+                start,
+                end,
+            )
 
-    conflicting = list(session.scalars(stmt).all())
+            # If there are busy slots for this calendar, it's not available
+            resource_busy = busy_slots.get(resource.google_calendar_id, [])
+            is_available = len(resource_busy) == 0
 
-    # Calculate reserved capacity
-    reserved_capacity = sum(r.quantity_reserved for r in conflicting)
-    available_capacity = resource.capacity - reserved_capacity
+            return ResourceAvailability(
+                resource_id=resource_id,
+                resource_name=resource.name,
+                total_capacity=resource.capacity,
+                is_available=is_available and resource.capacity >= quantity_needed,
+                available_capacity=resource.capacity if is_available else 0,
+                has_calendar=True,
+            )
+        except Exception:
+            # If calendar check fails, fall back to assuming available
+            pass
 
+    # Resource without calendar - assume available if active
     return ResourceAvailability(
         resource_id=resource_id,
         resource_name=resource.name,
         total_capacity=resource.capacity,
-        is_available=available_capacity >= quantity_needed,
-        available_capacity=max(0, available_capacity),
-        conflicting_reservations=conflicting,
+        is_available=resource.capacity >= quantity_needed,
+        available_capacity=resource.capacity,
+        has_calendar=has_calendar,
     )
 
 
@@ -171,7 +290,7 @@ def find_available_resources(
     if start is None or end is None:
         return all_resources
 
-    # Filter by availability
+    # Filter by availability using calendar check
     available = []
     for resource in all_resources:
         availability = check_resource_availability(
@@ -181,45 +300,6 @@ def find_available_resources(
             available.append(resource)
 
     return available
-
-
-def get_resource_schedule(
-    session: Session,
-    resource_id: UUID,
-    start: datetime,
-    end: datetime,
-) -> Sequence[ResourceReservation]:
-    """
-    Get all reservations for a resource within a time range.
-
-    Args:
-        session: Database session
-        resource_id: Resource to query
-        start: Range start
-        end: Range end
-
-    Returns:
-        List of reservations
-    """
-    stmt = (
-        select(ResourceReservation)
-        .where(
-            and_(
-                ResourceReservation.resource_id == resource_id,
-                ResourceReservation.deleted_at.is_(None),
-                ResourceReservation.status.in_(["confirmed", "proposed"]),
-                ResourceReservation.start_time < end,
-                ResourceReservation.end_time > start,
-            )
-        )
-        .options(
-            joinedload(ResourceReservation.event),
-            joinedload(ResourceReservation.reserver),
-        )
-        .order_by(ResourceReservation.start_time)
-    )
-
-    return session.scalars(stmt).all()
 
 
 def find_available_slots(
@@ -246,16 +326,13 @@ def find_available_slots(
     Returns:
         List of available slots
     """
-    resource = session.get(Resource, resource_id)
-    if not resource or resource.deleted_at or not resource.active:
+    resource = get_resource_by_id(session, resource_id)
+    if not resource or not resource.active:
         return []
 
     # Define the day boundaries
     day_start = datetime(date.year, date.month, date.day, start_hour, 0, 0)
     day_end = datetime(date.year, date.month, date.day, end_hour, 0, 0)
-
-    # Get existing reservations for the day
-    reservations = get_resource_schedule(session, resource_id, day_start, day_end)
 
     # Generate potential slots
     available_slots = []
@@ -281,76 +358,3 @@ def find_available_slots(
         current += slot_interval
 
     return available_slots
-
-
-def get_resource_utilization(
-    session: Session,
-    resource_id: UUID,
-    start: datetime,
-    end: datetime,
-) -> float:
-    """
-    Calculate resource utilization percentage for a time range.
-
-    Args:
-        session: Database session
-        resource_id: Resource to analyze
-        start: Range start
-        end: Range end
-
-    Returns:
-        Utilization as a percentage (0.0 to 1.0)
-    """
-    resource = session.get(Resource, resource_id)
-    if not resource or resource.deleted_at:
-        return 0.0
-
-    reservations = get_resource_schedule(session, resource_id, start, end)
-
-    # Calculate total reserved time
-    total_range = (end - start).total_seconds()
-    if total_range <= 0:
-        return 0.0
-
-    reserved_seconds = 0.0
-    for res in reservations:
-        # Clip reservation to the query range
-        res_start = max(res.start_time, start)
-        res_end = min(res.end_time, end)
-        if res_end > res_start:
-            reserved_seconds += (res_end - res_start).total_seconds()
-
-    return min(1.0, reserved_seconds / total_range)
-
-
-def get_resources_by_type(
-    session: Session,
-    resource_type: str,
-    active_only: bool = True,
-) -> Sequence[Resource]:
-    """
-    Get all resources of a specific type.
-
-    Args:
-        session: Database session
-        resource_type: Type to filter by
-        active_only: Only return active resources
-
-    Returns:
-        List of resources
-    """
-    conditions = [
-        Resource.deleted_at.is_(None),
-        Resource.resource_type == resource_type,
-    ]
-
-    if active_only:
-        conditions.append(Resource.active.is_(True))
-
-    stmt = (
-        select(Resource)
-        .where(and_(*conditions))
-        .order_by(Resource.name)
-    )
-
-    return session.scalars(stmt).all()

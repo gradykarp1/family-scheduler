@@ -1,19 +1,23 @@
 """
 SQLAlchemy models for Family Scheduler.
 
-This module exports all database models for easy importing and
-ensures Alembic can discover them for migrations.
+This module exports database models for family configuration.
+Events are stored in Google Calendar, not the local database.
+
+Tables:
+- family_members: Family member profiles and preferences
+- calendars: Google Calendar references and configuration
+- resources: Shared family resources (cars, rooms, etc.)
+- constraints: Scheduling rules and preferences
 """
 
 # Import base classes
 from src.models.base import Base, BaseModel, GUID, get_json_type
 
-# Import all models (must be imported for Alembic autogenerate)
+# Import configuration models
 from src.models.family import FamilyMember, Calendar
-from src.models.events import Event, EventParticipant
-from src.models.resources import Resource, ResourceReservation
+from src.models.resources import Resource
 from src.models.constraints import Constraint
-from src.models.conflicts import Conflict
 
 # Export all for easy importing
 __all__ = [
@@ -22,17 +26,11 @@ __all__ = [
     "BaseModel",
     "GUID",
     "get_json_type",
-    # Family models
+    # Family configuration
     "FamilyMember",
     "Calendar",
-    # Event models
-    "Event",
-    "EventParticipant",
-    # Resource models
+    # Resource configuration
     "Resource",
-    "ResourceReservation",
-    # Constraint model
+    # Constraint configuration
     "Constraint",
-    # Conflict model
-    "Conflict",
 ]

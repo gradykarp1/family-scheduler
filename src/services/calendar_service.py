@@ -1,15 +1,17 @@
 """
-Calendar service - synchronous wrapper for calendar operations.
+Calendar service - synchronous wrapper for Google Calendar operations.
 
 Provides a unified interface for calendar operations in orchestrator nodes,
-abstracting away the async nature of GoogleCalendarRepository and supporting
-both Google Calendar and local database backends.
+wrapping the async GoogleCalendarRepository with synchronous methods.
+
+Note: Events are stored in Google Calendar, not the local database.
+The local database is only used for family configuration (members, resources, constraints).
 """
 
 import asyncio
+import concurrent.futures
 import logging
 from datetime import datetime, timedelta, timezone
-from functools import lru_cache
 from typing import Optional, Sequence
 
 from src.config import get_settings
@@ -30,7 +32,7 @@ class CalendarService:
     Synchronous calendar service for use in orchestrator nodes.
 
     Wraps the async GoogleCalendarRepository with sync methods using asyncio.run().
-    Falls back to local database when CALENDAR_PROVIDER=local.
+    Google Calendar is the source of truth for all event data.
     """
 
     def __init__(self):
@@ -44,13 +46,7 @@ class CalendarService:
         if self._initialized:
             return
 
-        if self._settings.uses_google_calendar:
-            self._init_google_calendar()
-        else:
-            logger.info("Using local calendar provider (database)")
-            # Local provider doesn't need special initialization
-            # Operations will use database queries directly
-
+        self._init_google_calendar()
         self._initialized = True
 
     def _init_google_calendar(self):
@@ -90,18 +86,27 @@ class CalendarService:
             raise
 
     def _run_async(self, coro):
-        """Run an async coroutine synchronously."""
-        return asyncio.run(coro)
+        """Run an async coroutine synchronously.
+
+        Handles the case when already inside an event loop (e.g., FastAPI)
+        by running the coroutine in a thread pool.
+        """
+        try:
+            # Check if there's already a running event loop
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop - safe to use asyncio.run()
+            return asyncio.run(coro)
+
+        # Already in an event loop - run in a thread pool
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            future = pool.submit(asyncio.run, coro)
+            return future.result()
 
     @property
     def calendar_id(self) -> str:
         """Get the configured calendar ID."""
         return self._settings.google_calendar_id
-
-    @property
-    def is_google_calendar(self) -> bool:
-        """Check if using Google Calendar backend."""
-        return self._settings.uses_google_calendar
 
     def get_events_in_range(
         self,
@@ -111,7 +116,7 @@ class CalendarService:
         include_recurring: bool = True,
     ) -> Sequence[CalendarEvent]:
         """
-        Get events within a time range.
+        Get events within a time range from Google Calendar.
 
         Args:
             start: Range start (inclusive)
@@ -125,72 +130,14 @@ class CalendarService:
         self._ensure_initialized()
         cal_id = calendar_id or self.calendar_id
 
-        if self._repository:
-            return self._run_async(
-                self._repository.get_events_in_range(
-                    calendar_id=cal_id,
-                    start=start,
-                    end=end,
-                    include_recurring=include_recurring,
-                )
+        return self._run_async(
+            self._repository.get_events_in_range(
+                calendar_id=cal_id,
+                start=start,
+                end=end,
+                include_recurring=include_recurring,
             )
-        else:
-            # Local provider - use database queries
-            return self._get_events_from_database(start, end)
-
-    def _get_events_from_database(
-        self,
-        start: datetime,
-        end: datetime,
-    ) -> Sequence[CalendarEvent]:
-        """Get events from local database."""
-        from src.database import get_db_context
-        from src.models import Event
-        from sqlalchemy.orm import joinedload
-
-        with get_db_context() as db:
-            # Query events directly, filtering by time range
-            query = (
-                db.query(Event)
-                .filter(
-                    Event.start_time < end,
-                    Event.end_time > start,
-                    Event.status != "cancelled",
-                )
-                .options(joinedload(Event.participants))
-                .order_by(Event.start_time)
-            )
-
-            db_events = query.all()
-
-            # Convert to CalendarEvent format
-            events = []
-            for event in db_events:
-                attendees = []
-                for p in event.participants:
-                    if p.member and hasattr(p.member, 'email') and p.member.email:
-                        attendees.append(p.member.email)
-
-                cal_event = CalendarEvent(
-                    id=str(event.id),
-                    calendar_id=str(event.calendar_id),
-                    title=event.title,
-                    description=event.description,
-                    start_time=event.start_time,
-                    end_time=event.end_time,
-                    all_day=event.all_day,
-                    location=event.location,
-                    attendees=attendees,
-                    recurrence_rule=event.recurrence_rule,
-                    status=event.status,
-                    metadata={
-                        "priority": event.priority,
-                        "flexibility": event.flexibility,
-                    },
-                )
-                events.append(cal_event)
-
-            return events
+        )
 
     def get_event_by_id(
         self,
@@ -198,7 +145,7 @@ class CalendarService:
         calendar_id: Optional[str] = None,
     ) -> Optional[CalendarEvent]:
         """
-        Get a single event by ID.
+        Get a single event by ID from Google Calendar.
 
         Args:
             event_id: Event ID
@@ -210,36 +157,12 @@ class CalendarService:
         self._ensure_initialized()
         cal_id = calendar_id or self.calendar_id
 
-        if self._repository:
-            return self._run_async(
-                self._repository.get_event_by_id(
-                    calendar_id=cal_id,
-                    event_id=event_id,
-                )
+        return self._run_async(
+            self._repository.get_event_by_id(
+                calendar_id=cal_id,
+                event_id=event_id,
             )
-        else:
-            # Local provider
-            from src.database import get_db_context
-            from src.services.queries import get_event_by_id as db_get_event
-
-            with get_db_context() as db:
-                event = db_get_event(db, event_id)
-                if not event:
-                    return None
-
-                return CalendarEvent(
-                    id=str(event.id),
-                    calendar_id=str(event.calendar_id),
-                    title=event.title,
-                    description=event.description,
-                    start_time=event.start_time,
-                    end_time=event.end_time,
-                    all_day=event.all_day,
-                    location=event.location,
-                    attendees=[p.member.email for p in event.participants if p.member],
-                    recurrence_rule=event.recurrence_rule,
-                    status=event.status,
-                )
+        )
 
     def create_event(
         self,
@@ -247,7 +170,7 @@ class CalendarService:
         calendar_id: Optional[str] = None,
     ) -> CalendarEvent:
         """
-        Create a new event.
+        Create a new event in Google Calendar.
 
         Args:
             event: Event data
@@ -259,122 +182,14 @@ class CalendarService:
         self._ensure_initialized()
         cal_id = calendar_id or self.calendar_id
 
-        if self._repository:
-            created = self._run_async(
-                self._repository.create_event(
-                    calendar_id=cal_id,
-                    event=event,
-                )
+        created = self._run_async(
+            self._repository.create_event(
+                calendar_id=cal_id,
+                event=event,
             )
-            logger.info(f"Created event '{event.title}' in Google Calendar")
-            return created
-        else:
-            # Local provider - create in database
-            return self._create_event_in_database(event, cal_id)
-
-    def _create_event_in_database(
-        self,
-        event: CreateEventRequest,
-        calendar_id: str,
-    ) -> CalendarEvent:
-        """Create event in local database."""
-        from src.database import get_db_context
-        from src.models import Event, Calendar
-        import uuid as uuid_module
-
-        with get_db_context() as db:
-            # Get or create a default calendar if none specified
-            if calendar_id:
-                try:
-                    cal_uuid = uuid_module.UUID(calendar_id)
-                except ValueError:
-                    cal_uuid = None
-            else:
-                cal_uuid = None
-
-            if not cal_uuid:
-                # Find or create a default calendar
-                default_calendar = db.query(Calendar).filter(
-                    Calendar.calendar_type == "family"
-                ).first()
-
-                if not default_calendar:
-                    default_calendar = db.query(Calendar).first()
-
-                if default_calendar:
-                    cal_uuid = default_calendar.id
-                else:
-                    # Create a default calendar
-                    default_calendar = Calendar(
-                        id=uuid_module.uuid4(),
-                        name="Family Calendar",
-                        calendar_type="family",
-                        visibility="family",
-                    )
-                    db.add(default_calendar)
-                    db.flush()
-                    cal_uuid = default_calendar.id
-
-            # Get or create a default creator if not specified
-            creator_id = None
-            if event.created_by:
-                try:
-                    creator_id = uuid_module.UUID(event.created_by)
-                except ValueError:
-                    pass
-
-            if not creator_id:
-                # Find any family member to use as creator
-                from src.models import FamilyMember
-                default_member = db.query(FamilyMember).first()
-                if default_member:
-                    creator_id = default_member.id
-                else:
-                    # Create a default family member
-                    default_member = FamilyMember(
-                        id=uuid_module.uuid4(),
-                        name="System",
-                        email="system@family.local",
-                        role="parent",
-                    )
-                    db.add(default_member)
-                    db.flush()
-                    creator_id = default_member.id
-
-            db_event = Event(
-                id=uuid_module.uuid4(),
-                calendar_id=cal_uuid,
-                title=event.title,
-                description=event.description,
-                start_time=event.start_time,
-                end_time=event.end_time,
-                all_day=event.all_day,
-                location=event.location,
-                recurrence_rule=event.recurrence_rule,
-                priority=event.priority,
-                flexibility=event.flexibility,
-                status="confirmed",
-                created_by=creator_id,
-            )
-            db.add(db_event)
-            db.commit()
-            db.refresh(db_event)
-
-            logger.info(f"Created event '{event.title}' in local database")
-
-            return CalendarEvent(
-                id=str(db_event.id),
-                calendar_id=str(db_event.calendar_id),
-                title=db_event.title,
-                description=db_event.description,
-                start_time=db_event.start_time,
-                end_time=db_event.end_time,
-                all_day=db_event.all_day,
-                location=db_event.location,
-                attendees=event.attendees,
-                recurrence_rule=db_event.recurrence_rule,
-                status=db_event.status,
-            )
+        )
+        logger.info(f"Created event '{event.title}' in Google Calendar")
+        return created
 
     def update_event(
         self,
@@ -383,7 +198,7 @@ class CalendarService:
         calendar_id: Optional[str] = None,
     ) -> CalendarEvent:
         """
-        Update an existing event.
+        Update an existing event in Google Calendar.
 
         Args:
             event_id: Event to update
@@ -396,43 +211,13 @@ class CalendarService:
         self._ensure_initialized()
         cal_id = calendar_id or self.calendar_id
 
-        if self._repository:
-            return self._run_async(
-                self._repository.update_event(
-                    calendar_id=cal_id,
-                    event_id=event_id,
-                    updates=updates,
-                )
+        return self._run_async(
+            self._repository.update_event(
+                calendar_id=cal_id,
+                event_id=event_id,
+                updates=updates,
             )
-        else:
-            # Local provider
-            from src.database import get_db_context
-            from src.models import Event
-
-            with get_db_context() as db:
-                event = db.query(Event).filter(Event.id == event_id).first()
-                if not event:
-                    raise ValueError(f"Event {event_id} not found")
-
-                for key, value in updates.items():
-                    if hasattr(event, key):
-                        setattr(event, key, value)
-
-                db.commit()
-                db.refresh(event)
-
-                return CalendarEvent(
-                    id=str(event.id),
-                    calendar_id=str(event.calendar_id),
-                    title=event.title,
-                    description=event.description,
-                    start_time=event.start_time,
-                    end_time=event.end_time,
-                    all_day=event.all_day,
-                    location=event.location,
-                    recurrence_rule=event.recurrence_rule,
-                    status=event.status,
-                )
+        )
 
     def delete_event(
         self,
@@ -440,7 +225,7 @@ class CalendarService:
         calendar_id: Optional[str] = None,
     ) -> bool:
         """
-        Delete an event.
+        Delete an event from Google Calendar.
 
         Args:
             event_id: Event to delete
@@ -452,26 +237,12 @@ class CalendarService:
         self._ensure_initialized()
         cal_id = calendar_id or self.calendar_id
 
-        if self._repository:
-            return self._run_async(
-                self._repository.delete_event(
-                    calendar_id=cal_id,
-                    event_id=event_id,
-                )
+        return self._run_async(
+            self._repository.delete_event(
+                calendar_id=cal_id,
+                event_id=event_id,
             )
-        else:
-            # Local provider
-            from src.database import get_db_context
-            from src.models import Event
-
-            with get_db_context() as db:
-                event = db.query(Event).filter(Event.id == event_id).first()
-                if not event:
-                    return False
-
-                db.delete(event)
-                db.commit()
-                return True
+        )
 
     def find_free_busy(
         self,
@@ -492,26 +263,13 @@ class CalendarService:
         """
         self._ensure_initialized()
 
-        if self._repository:
-            return self._run_async(
-                self._repository.find_free_busy(
-                    calendar_ids=calendar_ids,
-                    start=start,
-                    end=end,
-                )
+        return self._run_async(
+            self._repository.find_free_busy(
+                calendar_ids=calendar_ids,
+                start=start,
+                end=end,
             )
-        else:
-            # Local provider - derive from events
-            result = {}
-            for cal_id in calendar_ids:
-                events = self.get_events_in_range(start, end, calendar_id=cal_id)
-                busy_slots = [
-                    FreeBusySlot(start=e.start_time, end=e.end_time)
-                    for e in events
-                    if e.status != "cancelled"
-                ]
-                result[cal_id] = busy_slots
-            return result
+        )
 
     def find_available_slots(
         self,
@@ -553,7 +311,6 @@ class CalendarService:
         # Find gaps
         available = []
         current = start
-        duration = timedelta(minutes=duration_minutes)
 
         # Ensure current has timezone
         if current.tzinfo is None:
@@ -577,7 +334,7 @@ class CalendarService:
                 slots_in_gap = self._find_slots_in_range(
                     gap_start,
                     gap_end,
-                    duration,
+                    timedelta(minutes=duration_minutes),
                     working_hours_start,
                     working_hours_end,
                 )
@@ -588,7 +345,6 @@ class CalendarService:
                 current = busy_end
 
         # Check remaining time after last busy period
-        # Ensure end has timezone
         end_tz = end
         if end_tz.tzinfo is None:
             end_tz = end_tz.replace(tzinfo=timezone.utc)
@@ -597,7 +353,7 @@ class CalendarService:
             slots_in_gap = self._find_slots_in_range(
                 current,
                 end,
-                duration,
+                timedelta(minutes=duration_minutes),
                 working_hours_start,
                 working_hours_end,
             )
@@ -669,7 +425,7 @@ def get_calendar_service() -> CalendarService:
     Get the calendar service singleton.
 
     Returns:
-        CalendarService instance configured based on settings
+        CalendarService instance configured for Google Calendar
     """
     global _calendar_service
 

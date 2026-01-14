@@ -2,6 +2,7 @@
 Pytest configuration and fixtures for Family Scheduler tests.
 
 Provides database session fixtures and sample data for testing.
+Note: Events are stored in Google Calendar, not the local database.
 """
 
 import uuid
@@ -16,10 +17,8 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from src.models.base import Base
 from src.models.family import FamilyMember, Calendar
-from src.models.events import Event, EventParticipant
-from src.models.resources import Resource, ResourceReservation
+from src.models.resources import Resource
 from src.models.constraints import Constraint
-from src.models.conflicts import Conflict
 
 
 # Configure SQLite to enforce foreign key constraints in tests
@@ -101,53 +100,21 @@ def sample_calendar(db_session: Session, sample_family_member: FamilyMember) -> 
         sample_family_member: Owner of the calendar
 
     Returns:
-        Calendar: A persisted calendar
+        Calendar: A persisted calendar with Google Calendar ID
     """
     calendar = Calendar(
         name="Family Calendar",
         description="Main family calendar",
         calendar_type="family",
+        google_calendar_id="family@group.calendar.google.com",
         color="#FF5733",
         owner_id=sample_family_member.id,
-        visibility="shared"
+        visibility="family"
     )
     db_session.add(calendar)
     db_session.commit()
     db_session.refresh(calendar)
     return calendar
-
-
-@pytest.fixture
-def sample_event(db_session: Session, sample_calendar: Calendar, sample_family_member: FamilyMember) -> Event:
-    """
-    Create a sample Event for testing.
-
-    Args:
-        db_session: Database session
-        sample_calendar: Calendar the event belongs to
-        sample_family_member: Creator of the event
-
-    Returns:
-        Event: A persisted event
-    """
-    event = Event(
-        calendar_id=sample_calendar.id,
-        title="Doctor Appointment",
-        description="Annual checkup",
-        start_time=datetime(2026, 2, 15, 10, 0, tzinfo=timezone.utc),
-        end_time=datetime(2026, 2, 15, 11, 0, tzinfo=timezone.utc),
-        all_day=False,
-        location="Medical Center",
-        status="proposed",
-        priority="medium",
-        flexibility="fixed",
-        created_by=sample_family_member.id,
-        event_metadata={"reminder": "1 day before"}
-    )
-    db_session.add(event)
-    db_session.commit()
-    db_session.refresh(event)
-    return event
 
 
 @pytest.fixture
@@ -169,6 +136,33 @@ def sample_resource(db_session: Session) -> Resource:
             "color": "blue",
             "seats": 5,
             "license_plate": "ABC123"
+        }
+    )
+    db_session.add(resource)
+    db_session.commit()
+    db_session.refresh(resource)
+    return resource
+
+
+@pytest.fixture
+def sample_resource_with_calendar(db_session: Session) -> Resource:
+    """
+    Create a sample Resource with a Google Calendar for availability tracking.
+
+    Returns:
+        Resource: A persisted resource with google_calendar_id
+    """
+    resource = Resource(
+        name="Conference Room",
+        description="Main meeting room",
+        resource_type="room",
+        capacity=10,
+        location="2nd Floor",
+        active=True,
+        google_calendar_id="conference.room@resource.calendar.google.com",
+        resource_metadata={
+            "has_projector": True,
+            "has_whiteboard": True
         }
     )
     db_session.add(resource)
@@ -213,60 +207,6 @@ def sample_constraint(db_session: Session, sample_family_member: FamilyMember) -
 
 
 @pytest.fixture
-def sample_conflict(db_session: Session, sample_event: Event) -> Conflict:
-    """
-    Create a sample Conflict for testing.
-
-    Args:
-        db_session: Database session
-        sample_event: Proposed event with conflict
-
-    Returns:
-        Conflict: A persisted conflict
-    """
-    # Create a second event that conflicts with the first
-    conflicting_event = Event(
-        calendar_id=sample_event.calendar_id,
-        title="Team Meeting",
-        description="Weekly sync",
-        start_time=datetime(2026, 2, 15, 10, 30, tzinfo=timezone.utc),
-        end_time=datetime(2026, 2, 15, 11, 30, tzinfo=timezone.utc),
-        all_day=False,
-        status="confirmed",
-        priority="high",
-        flexibility="fixed",
-        created_by=sample_event.created_by,
-        event_metadata={}
-    )
-    db_session.add(conflicting_event)
-    db_session.commit()
-    db_session.refresh(conflicting_event)
-
-    conflict = Conflict(
-        proposed_event_id=sample_event.id,
-        conflicting_event_id=conflicting_event.id,
-        conflict_type="time_overlap",
-        severity="high",
-        description="Events overlap in time",
-        affected_participants=[str(sample_event.created_by)],
-        affected_resources=[],
-        affected_constraints=[],
-        proposed_resolutions=[
-            {
-                "type": "reschedule",
-                "description": "Move doctor appointment to 1pm",
-                "confidence": 0.85
-            }
-        ],
-        status="detected"
-    )
-    db_session.add(conflict)
-    db_session.commit()
-    db_session.refresh(conflict)
-    return conflict
-
-
-@pytest.fixture
 def multiple_family_members(db_session: Session) -> list[FamilyMember]:
     """
     Create multiple family members for testing relationships.
@@ -304,3 +244,97 @@ def multiple_family_members(db_session: Session) -> list[FamilyMember]:
         db_session.refresh(member)
 
     return members
+
+
+@pytest.fixture
+def multiple_calendars(db_session: Session, multiple_family_members: list[FamilyMember]) -> list[Calendar]:
+    """
+    Create multiple calendars for testing.
+
+    Returns:
+        list[Calendar]: List of persisted calendars with Google Calendar IDs
+    """
+    calendars = [
+        Calendar(
+            name="Family Calendar",
+            description="Shared family calendar",
+            calendar_type="family",
+            google_calendar_id="family@group.calendar.google.com",
+            visibility="family"
+        ),
+        Calendar(
+            name="Alice's Calendar",
+            description="Alice's personal calendar",
+            calendar_type="personal",
+            google_calendar_id="alice@calendar.google.com",
+            owner_id=multiple_family_members[0].id,
+            visibility="private"
+        ),
+        Calendar(
+            name="Bob's Calendar",
+            description="Bob's personal calendar",
+            calendar_type="personal",
+            google_calendar_id="bob@calendar.google.com",
+            owner_id=multiple_family_members[1].id,
+            visibility="private"
+        ),
+    ]
+
+    for calendar in calendars:
+        db_session.add(calendar)
+
+    db_session.commit()
+
+    for calendar in calendars:
+        db_session.refresh(calendar)
+
+    return calendars
+
+
+@pytest.fixture
+def multiple_resources(db_session: Session) -> list[Resource]:
+    """
+    Create multiple resources for testing.
+
+    Returns:
+        list[Resource]: List of persisted resources
+    """
+    resources = [
+        Resource(
+            name="Family Car",
+            description="Honda Accord",
+            resource_type="vehicle",
+            capacity=1,
+            location="Garage",
+            active=True,
+            resource_metadata={"color": "blue", "seats": 5}
+        ),
+        Resource(
+            name="Kitchen",
+            description="Main kitchen",
+            resource_type="room",
+            capacity=4,
+            location="First Floor",
+            active=True,
+            resource_metadata={"has_stove": True}
+        ),
+        Resource(
+            name="Shared Laptop",
+            description="Family laptop for homework",
+            resource_type="equipment",
+            capacity=1,
+            location="Living Room",
+            active=True,
+            resource_metadata={"brand": "Dell"}
+        ),
+    ]
+
+    for resource in resources:
+        db_session.add(resource)
+
+    db_session.commit()
+
+    for resource in resources:
+        db_session.refresh(resource)
+
+    return resources

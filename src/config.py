@@ -84,6 +84,12 @@ class Settings(BaseSettings):
         description="Calendar storage backend (google or local database)"
     )
 
+    # Timezone Configuration
+    timezone: str = Field(
+        default="America/Los_Angeles",
+        description="Default timezone for the family (IANA timezone name, e.g., America/Los_Angeles)"
+    )
+
     # Google Calendar Configuration
     google_calendar_id: str = Field(
         default="",

@@ -3,8 +3,10 @@ Service layer for the Family Scheduler.
 
 Provides business logic and data access patterns for:
 - Recurrence expansion (RRULE handling)
-- Event and calendar queries
+- Family configuration queries (members, calendars, resources, constraints)
 - Resource availability checking
+
+Note: Events are stored in Google Calendar. Use CalendarService for event operations.
 """
 
 from src.services.recurrence import (
@@ -19,29 +21,38 @@ from src.services.recurrence import (
 )
 
 from src.services.queries import (
-    get_events_in_range,
-    get_events_for_member,
-    get_event_by_id,
-    find_overlapping_events,
-    get_upcoming_events,
-    get_member_schedule,
-    find_busy_members,
-    find_available_members,
-    get_unresolved_conflicts,
+    # Family member queries
+    get_all_family_members,
+    get_family_member_by_id,
+    get_family_member_by_email,
+    get_family_members_by_role,
+    # Calendar queries
+    get_all_calendars,
     get_calendars_by_owner,
     get_calendar_by_id,
+    get_calendar_by_google_id,
+    get_calendars_by_type,
+    # Resource queries
+    get_all_resources,
+    get_resource_by_id,
+    get_resources_by_type,
+    # Constraint queries
+    get_all_constraints,
+    get_constraints_for_member,
+    get_constraints_by_type,
 )
 
 from src.services.resources import (
     AvailabilitySlot,
     ResourceAvailability,
+    get_resource_by_id as get_resource,
+    get_all_resources as get_active_resources,
+    get_resources_by_type as get_resources_filtered_by_type,
+    find_resources_with_calendar,
     check_resource_availability,
     check_multiple_resources,
     find_available_resources,
-    get_resource_schedule,
     find_available_slots,
-    get_resource_utilization,
-    get_resources_by_type,
 )
 
 from src.services.calendar_service import (
@@ -60,29 +71,37 @@ __all__ = [
     "get_next_occurrence",
     "validate_rrule",
     "count_instances_in_range",
-    # Queries
-    "get_events_in_range",
-    "get_events_for_member",
-    "get_event_by_id",
-    "find_overlapping_events",
-    "get_upcoming_events",
-    "get_member_schedule",
-    "find_busy_members",
-    "find_available_members",
-    "get_unresolved_conflicts",
+    # Family member queries
+    "get_all_family_members",
+    "get_family_member_by_id",
+    "get_family_member_by_email",
+    "get_family_members_by_role",
+    # Calendar queries
+    "get_all_calendars",
     "get_calendars_by_owner",
     "get_calendar_by_id",
-    # Resources
+    "get_calendar_by_google_id",
+    "get_calendars_by_type",
+    # Resource queries
+    "get_all_resources",
+    "get_resource_by_id",
+    "get_resources_by_type",
+    # Constraint queries
+    "get_all_constraints",
+    "get_constraints_for_member",
+    "get_constraints_by_type",
+    # Resource availability
     "AvailabilitySlot",
     "ResourceAvailability",
+    "get_resource",
+    "get_active_resources",
+    "get_resources_filtered_by_type",
+    "find_resources_with_calendar",
     "check_resource_availability",
     "check_multiple_resources",
     "find_available_resources",
-    "get_resource_schedule",
     "find_available_slots",
-    "get_resource_utilization",
-    "get_resources_by_type",
-    # Calendar Service
+    # Calendar Service (Google Calendar)
     "CalendarService",
     "get_calendar_service",
     "reset_calendar_service",

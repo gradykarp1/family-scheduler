@@ -53,7 +53,7 @@ def extract_result(state: FamilySchedulerState) -> WorkflowResult:
     - Clarification needed
     """
     proposed_event = state.get("proposed_event")
-    detected_conflicts = state.get("detected_conflicts", {})
+    detected_conflicts = state.get("detected_conflicts") or {}
     agent_outputs = state.get("agent_outputs", {})
 
     # Check for clarification

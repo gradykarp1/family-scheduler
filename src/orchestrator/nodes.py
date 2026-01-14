@@ -65,10 +65,8 @@ def nl_parser_node(state: FamilySchedulerState) -> dict[str, Any]:
     """
     Extract structured data from natural language input.
 
-    This node parses the user's natural language request and extracts:
-    - Event type (create, modify, cancel, query)
-    - Title, times, participants, resources
-    - Priority and flexibility preferences
+    Uses LangChain's with_structured_output() for guaranteed JSON schema compliance.
+    Enhanced with few-shot examples covering all event types.
 
     Returns partial state update with:
     - agent_outputs.nl_parser: Agent output with data, confidence, explanation
@@ -79,65 +77,55 @@ def nl_parser_node(state: FamilySchedulerState) -> dict[str, Any]:
     logger.info(f"[{conv_id}] Executing NL Parser node")
 
     try:
+        from src.agents.prompts.nl_parser_prompts import build_nl_parser_prompt
+        from src.agents.state import NLParserOutput
+
         user_input = state.get("user_input", "")
         context = state.get("messages", [])
 
-        # Invoke LLM for parsing
-        llm = get_llm(temperature=0.3)  # Lower temperature for more deterministic parsing
+        # Get current date for relative time parsing
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        prompt = f"""You are a natural language parser for a family scheduling application.
-Extract structured event data from the user's input.
+        # Get timezone from settings
+        from src.config import get_settings
+        settings = get_settings()
+        user_timezone = settings.timezone
 
-User Input: {user_input}
+        # Get family context (would come from database in real implementation)
+        family_context = state.get("family_context", {})
+        family_members = family_context.get("members", [])
+        resources = family_context.get("resources", [])
 
-Previous conversation context (if any):
-{context[-3:] if context else "No previous context"}
+        # Build enhanced prompt with few-shot examples
+        prompt = build_nl_parser_prompt(
+            user_input=user_input,
+            today=today,
+            timezone=user_timezone,
+            family_members=family_members,
+            resources=resources,
+            conversation_context=context[-3:] if context else None,
+        )
 
-Extract and return a JSON object with the following fields:
-- event_type: "create", "modify", "cancel", or "query"
-- title: Event title (if applicable)
-- start_time: ISO 8601 datetime string (if mentioned)
-- end_time: ISO 8601 datetime string (if mentioned)
-- participants: List of participant names mentioned
-- resources: List of resources needed (car, room, etc.)
-- priority: "low", "medium", "high" (if mentioned, default "medium")
-- flexibility: "fixed", "flexible", "very_flexible" (if mentioned)
-- recurrence_rule: RRULE string if this is a recurring event
+        # Get LLM with structured output for guaranteed schema compliance
+        llm = get_llm(temperature=0.2)  # Lower temperature for more consistent parsing
+        structured_llm = llm.with_structured_output(NLParserOutput)
 
-If information is not provided, use null for optional fields.
-
-Respond with ONLY the JSON object, no additional text."""
-
-        response = llm.invoke(prompt)
-        response_text = response.content if hasattr(response, "content") else str(response)
-
-        # Parse response (simplified - real implementation would be more robust)
-        import json
-        try:
-            # Try to extract JSON from response
-            json_start = response_text.find("{")
-            json_end = response_text.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                parsed_data = json.loads(response_text[json_start:json_end])
-            else:
-                parsed_data = {"event_type": "create", "title": user_input}
-        except json.JSONDecodeError:
-            parsed_data = {"event_type": "create", "title": user_input}
+        # Invoke and get validated output
+        parsed_output: NLParserOutput = structured_llm.invoke(prompt)
+        parsed_data = parsed_output.model_dump()
 
         # Calculate confidence based on extracted data completeness
-        confidence = _calculate_nl_confidence(parsed_data, user_input)
+        confidence = _calculate_nl_confidence_enhanced(parsed_output, user_input)
 
         # Generate explanation
-        event_type = parsed_data.get("event_type", "create")
-        title = parsed_data.get("title", "event")
-        explanation = f"Understood as: {event_type} event '{title}'"
+        explanation = _generate_nl_explanation(parsed_output)
 
         # Build agent output
         agent_output = {
             "data": parsed_data,
             "confidence": confidence,
             "explanation": explanation,
-            "reasoning": "Parsed natural language input using LLM",
+            "reasoning": _generate_nl_reasoning(parsed_output, user_input, confidence),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -151,7 +139,7 @@ Respond with ONLY the JSON object, no additional text."""
 
         logger.info(
             f"[{conv_id}] NL Parser completed: "
-            f"intent={event_type}, confidence={confidence:.2f}"
+            f"intent={parsed_output.event_type}, confidence={confidence:.2f}"
         )
 
         return {
@@ -168,6 +156,30 @@ Respond with ONLY the JSON object, no additional text."""
     except Exception as e:
         logger.error(f"[{conv_id}] NL Parser failed: {e}", exc_info=True)
 
+        # Attempt fallback parsing
+        fallback_result = _fallback_nl_parser(state.get("user_input", ""))
+
+        if fallback_result:
+            logger.info(f"[{conv_id}] Using fallback parser")
+            return {
+                "agent_outputs": {
+                    **state.get("agent_outputs", {}),
+                    "nl_parser": fallback_result,
+                },
+                "parsed_event_data": fallback_result["data"],
+                "audit_log": [
+                    *state.get("audit_log", []),
+                    _create_audit_entry(
+                        step="nl_parsing",
+                        agent="nl_parser",
+                        confidence=fallback_result["confidence"],
+                        explanation="Used fallback parser due to LLM error",
+                    ),
+                ],
+                "workflow_status": "in_progress",
+                "current_step": "nl_parsing",
+            }
+
         error = _create_error(
             error_type="agent_failure",
             agent="nl_parser",
@@ -183,6 +195,136 @@ Respond with ONLY the JSON object, no additional text."""
         }
 
 
+def _calculate_nl_confidence_enhanced(parsed_output, user_input: str) -> float:
+    """Enhanced confidence calculation with more granular scoring."""
+    confidence = 0.5  # Base confidence
+
+    # Event type is always present (required field)
+    confidence += 0.05
+
+    # Title present and meaningful
+    if parsed_output.title and len(parsed_output.title) > 3:
+        confidence += 0.15
+
+    # Explicit time specified
+    if parsed_output.start_time:
+        confidence += 0.2
+        # Bonus for having end time too
+        if parsed_output.end_time:
+            confidence += 0.05
+
+    # Participants identified
+    if parsed_output.participants:
+        confidence += 0.1 + min(0.05 * len(parsed_output.participants), 0.1)
+
+    # Resources specified
+    if parsed_output.resources:
+        confidence += 0.05
+
+    # Priority explicitly set
+    if parsed_output.priority:
+        confidence += 0.05
+
+    # Recurrence pattern detected
+    if parsed_output.recurrence_rule:
+        confidence += 0.05
+
+    # Penalize very short inputs (likely ambiguous)
+    word_count = len(user_input.split())
+    if word_count < 3:
+        confidence -= 0.15
+    elif word_count < 5:
+        confidence -= 0.05
+
+    return min(max(confidence, 0.1), 1.0)
+
+
+def _generate_nl_explanation(parsed_output) -> str:
+    """Generate user-friendly explanation of parsing result."""
+    event_type = parsed_output.event_type
+    title = parsed_output.title or "event"
+
+    if event_type == "create":
+        time_str = ""
+        if parsed_output.start_time:
+            time_str = f" on {parsed_output.start_time[:10]}"
+        participants_str = ""
+        if parsed_output.participants:
+            participants_str = f" with {', '.join(parsed_output.participants[:3])}"
+        return f"Creating '{title}'{time_str}{participants_str}"
+
+    elif event_type == "query":
+        return f"Looking up schedule information: {title}"
+
+    elif event_type == "modify":
+        return f"Modifying existing event: {title}"
+
+    else:  # cancel
+        return f"Canceling event: {title}"
+
+
+def _generate_nl_reasoning(parsed_output, user_input: str, confidence: float) -> str:
+    """Generate detailed reasoning for parsing decision."""
+    reasons = []
+
+    if confidence >= 0.8:
+        reasons.append("High confidence - clear and explicit input")
+    elif confidence >= 0.6:
+        reasons.append("Moderate confidence - some details inferred")
+    else:
+        reasons.append("Low confidence - input is ambiguous or incomplete")
+
+    if parsed_output.start_time:
+        reasons.append("Time reference detected and parsed")
+    else:
+        reasons.append("No specific time mentioned")
+
+    if parsed_output.participants:
+        reasons.append(f"Identified {len(parsed_output.participants)} participant(s)")
+
+    if parsed_output.recurrence_rule:
+        reasons.append("Recurring pattern detected")
+
+    return "; ".join(reasons)
+
+
+def _fallback_nl_parser(user_input: str) -> dict[str, Any] | None:
+    """Fallback parser using simple heuristics when LLM fails."""
+    if not user_input:
+        return None
+
+    # Simple keyword-based event type detection
+    input_lower = user_input.lower()
+
+    if any(word in input_lower for word in ["cancel", "remove", "delete"]):
+        event_type = "cancel"
+    elif any(word in input_lower for word in ["change", "move", "reschedule", "modify"]):
+        event_type = "modify"
+    elif any(word in input_lower for word in ["what", "when", "who", "?", "available", "free"]):
+        event_type = "query"
+    else:
+        event_type = "create"
+
+    return {
+        "data": {
+            "event_type": event_type,
+            "title": user_input[:50],
+            "start_time": None,
+            "end_time": None,
+            "participants": [],
+            "resources": [],
+            "priority": None,
+            "flexibility": None,
+            "recurrence_rule": None,
+        },
+        "confidence": 0.3,
+        "explanation": f"Fallback parsing detected '{event_type}' intent",
+        "reasoning": "LLM parsing failed; used keyword-based fallback",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+# Legacy function for backwards compatibility with tests
 def _calculate_nl_confidence(parsed_data: dict, user_input: str) -> float:
     """Calculate confidence score for NL parsing based on completeness."""
     confidence = 0.5  # Base confidence
@@ -630,10 +772,8 @@ def resolution_node(state: FamilySchedulerState) -> dict[str, Any]:
     """
     Generate conflict resolution strategies.
 
-    This node:
-    - Analyzes detected conflicts
-    - Proposes resolution options (reschedule, modify, cancel)
-    - Scores resolutions by impact and feasibility
+    Uses structured output for guaranteed schema compliance and
+    enhanced prompts with strategy examples.
 
     Returns partial state update with:
     - agent_outputs.resolution: Proposed resolutions
@@ -644,72 +784,72 @@ def resolution_node(state: FamilySchedulerState) -> dict[str, Any]:
     logger.info(f"[{conv_id}] Executing Resolution node")
 
     try:
+        from src.agents.prompts.resolution_prompts import build_resolution_prompt
+        from src.agents.state import ResolutionOutput
+
         detected_conflicts = state.get("detected_conflicts", {})
         conflicts = detected_conflicts.get("conflicts", [])
         parsed_data = state.get("parsed_event_data", {})
 
-        # Generate resolutions using LLM
-        llm = get_llm(temperature=0.5)
-
-        prompt = f"""You are a scheduling assistant helping resolve conflicts.
-
-Conflicts detected:
-{conflicts}
-
-Original event request:
-{parsed_data}
-
-Generate 2-3 resolution options. For each option, provide:
-- resolution_id: Unique identifier (e.g., "res_1")
-- strategy: One of "move_event", "shorten_event", "cancel_event", "override_constraint"
-- score: Confidence score 0.0-1.0
-- description: Human-readable description
-- conflicts_resolved: List of conflict IDs this resolves
-
-Respond with a JSON object containing:
-{{
-  "proposed_resolutions": [...],
-  "recommended_resolution": "res_id of best option"
-}}"""
-
-        response = llm.invoke(prompt)
-        response_text = response.content if hasattr(response, "content") else str(response)
-
-        # Parse response
-        import json
-        try:
-            json_start = response_text.find("{")
-            json_end = response_text.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                resolution_data = json.loads(response_text[json_start:json_end])
-            else:
-                resolution_data = {
-                    "proposed_resolutions": [
-                        {
-                            "resolution_id": "res_1",
-                            "strategy": "move_event",
-                            "score": 0.8,
-                            "description": "Reschedule to alternative time",
-                            "conflicts_resolved": [c.get("id", "") for c in conflicts],
-                        }
-                    ],
-                    "recommended_resolution": "res_1",
-                }
-        except json.JSONDecodeError:
-            resolution_data = {
-                "proposed_resolutions": [],
-                "recommended_resolution": None,
+        # If no conflicts, return empty resolution
+        if not conflicts:
+            logger.info(f"[{conv_id}] No conflicts to resolve")
+            return {
+                "agent_outputs": {
+                    **state.get("agent_outputs", {}),
+                    "resolution": {
+                        "data": {
+                            "proposed_resolutions": [],
+                            "recommended_resolution": None,
+                            "analysis_summary": "No conflicts detected",
+                        },
+                        "confidence": 1.0,
+                        "explanation": "No conflicts to resolve",
+                        "reasoning": "Conflict detection found no blocking conflicts",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    },
+                },
+                "audit_log": [
+                    *state.get("audit_log", []),
+                    _create_audit_entry(
+                        step="resolution",
+                        agent="resolution",
+                        confidence=1.0,
+                        explanation="No conflicts to resolve",
+                    ),
+                ],
+                "workflow_status": "in_progress",
+                "current_step": "resolution",
             }
 
-        confidence = 0.85
+        # Build enhanced prompt with conflict context
+        prompt = build_resolution_prompt(
+            conflicts=conflicts,
+            event_request=parsed_data,
+            existing_events=None,  # Could be populated from calendar service
+        )
+
+        # Get LLM with structured output for guaranteed schema compliance
+        llm = get_llm(temperature=0.5)  # Moderate temperature for creative solutions
+        structured_llm = llm.with_structured_output(ResolutionOutput)
+
+        # Invoke and get validated output
+        resolution_output: ResolutionOutput = structured_llm.invoke(prompt)
+        resolution_data = resolution_output.model_dump()
+
+        # Calculate confidence based on resolution quality
+        confidence = _calculate_resolution_confidence(resolution_output, conflicts)
+
         resolutions = resolution_data.get("proposed_resolutions", [])
-        explanation = f"Generated {len(resolutions)} resolution options"
+        explanation = f"Generated {len(resolutions)} resolution options for {len(conflicts)} conflict(s)"
 
         agent_output = {
             "data": resolution_data,
             "confidence": confidence,
             "explanation": explanation,
-            "reasoning": "Analyzed conflicts and generated feasible resolutions",
+            "reasoning": resolution_data.get(
+                "analysis_summary", "Analyzed conflicts and generated feasible resolutions"
+            ),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -723,7 +863,7 @@ Respond with a JSON object containing:
 
         logger.info(
             f"[{conv_id}] Resolution completed: "
-            f"{len(resolutions)} options generated"
+            f"{len(resolutions)} options generated, confidence={confidence:.2f}"
         )
 
         return {
@@ -739,6 +879,31 @@ Respond with a JSON object containing:
     except Exception as e:
         logger.error(f"[{conv_id}] Resolution failed: {e}", exc_info=True)
 
+        # Attempt fallback resolution
+        fallback = _fallback_resolution(
+            state.get("detected_conflicts", {}).get("conflicts", [])
+        )
+
+        if fallback:
+            logger.info(f"[{conv_id}] Using fallback resolution")
+            return {
+                "agent_outputs": {
+                    **state.get("agent_outputs", {}),
+                    "resolution": fallback,
+                },
+                "audit_log": [
+                    *state.get("audit_log", []),
+                    _create_audit_entry(
+                        step="resolution",
+                        agent="resolution",
+                        confidence=fallback["confidence"],
+                        explanation="Used fallback resolution due to LLM error",
+                    ),
+                ],
+                "workflow_status": "awaiting_user",
+                "current_step": "resolution",
+            }
+
         error = _create_error(
             error_type="agent_failure",
             agent="resolution",
@@ -752,6 +917,79 @@ Respond with a JSON object containing:
             "errors": [*state.get("errors", []), error],
             "current_step": "resolution",
         }
+
+
+def _calculate_resolution_confidence(resolution_output, conflicts: list[dict]) -> float:
+    """Calculate confidence based on resolution quality."""
+    confidence = 0.6  # Base confidence
+
+    resolutions = resolution_output.proposed_resolutions
+
+    if not resolutions:
+        return 0.3  # Low confidence if no resolutions
+
+    # More options = higher confidence (up to a point)
+    if len(resolutions) >= 2:
+        confidence += 0.1
+    if len(resolutions) >= 3:
+        confidence += 0.05
+
+    # Check if resolutions address all conflicts
+    all_conflict_ids = {
+        c.get("conflict_id", c.get("id", "")) for c in conflicts
+    }
+    resolved_ids = set()
+    for res in resolutions:
+        resolved_ids.update(res.conflicts_resolved)
+
+    if all_conflict_ids:
+        coverage = len(resolved_ids & all_conflict_ids) / len(all_conflict_ids)
+        confidence += coverage * 0.15
+
+    # Bonus for high-scoring resolutions
+    max_score = max((r.score for r in resolutions), default=0)
+    if max_score >= 0.8:
+        confidence += 0.1
+    elif max_score >= 0.6:
+        confidence += 0.05
+
+    # Penalty if all resolutions have side effects
+    all_have_side_effects = all(len(r.side_effects) > 0 for r in resolutions)
+    if all_have_side_effects:
+        confidence -= 0.05
+
+    return min(max(confidence, 0.2), 1.0)
+
+
+def _fallback_resolution(conflicts: list[dict]) -> dict[str, Any] | None:
+    """Generate basic fallback resolutions when LLM fails."""
+    if not conflicts:
+        return None
+
+    fallback_resolutions = []
+
+    for i, conflict in enumerate(conflicts[:2]):  # Handle up to 2 conflicts
+        fallback_resolutions.append({
+            "resolution_id": f"fallback_res_{i+1}",
+            "strategy": "move_event",
+            "score": 0.6,
+            "description": f"Reschedule to avoid conflict: {conflict.get('description', 'time overlap')}",
+            "changes": [],
+            "conflicts_resolved": [conflict.get("conflict_id", conflict.get("id", ""))],
+            "side_effects": ["Manual time selection required"],
+        })
+
+    return {
+        "data": {
+            "proposed_resolutions": fallback_resolutions,
+            "recommended_resolution": "fallback_res_1",
+            "analysis_summary": "Fallback resolution - please review manually",
+        },
+        "confidence": 0.4,
+        "explanation": "Generated basic resolution options (LLM fallback)",
+        "reasoning": "LLM resolution generation failed; using simple reschedule suggestion",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 # =============================================================================

@@ -212,21 +212,49 @@ class TestInvokeOrchestrator:
         """Reset checkpointer before each test."""
         reset_checkpointer()
 
+    @patch("src.services.calendar_service.get_calendar_service")
     @patch("src.orchestrator.nodes.get_llm")
-    def test_successful_invocation(self, mock_get_llm):
+    def test_successful_invocation(self, mock_get_llm, mock_get_calendar_service):
         """Test successful orchestrator invocation."""
-        # Mock LLM for NL parser
+        from datetime import datetime, timezone
+        from src.agents.state import NLParserOutput
+        from src.integrations.base import CalendarEvent
+
+        # Mock calendar service with real CalendarEvent (serializable)
+        mock_event = CalendarEvent(
+            id="event_123",
+            calendar_id="test@calendar",
+            title="Team Meeting",
+            start_time=datetime(2026, 1, 15, 14, 0, tzinfo=timezone.utc),
+            end_time=datetime(2026, 1, 15, 15, 0, tzinfo=timezone.utc),
+        )
+        mock_service = MagicMock()
+        mock_service.create_event.return_value = mock_event
+        mock_service.get_events_in_range.return_value = []
+        mock_service.find_available_slots.return_value = []
+        mock_get_calendar_service.return_value = mock_service
+
+        # Create mock NLParserOutput for structured output
+        mock_parsed_output = NLParserOutput(
+            event_type="create",
+            title="Team Meeting",
+            start_time="2026-01-15T14:00:00Z",
+            end_time="2026-01-15T15:00:00Z",
+            participants=["Alice"],
+            resources=[],
+            priority=None,
+            flexibility=None,
+            recurrence_rule=None,
+        )
+
+        # Setup mock for structured output
+        mock_structured_llm = MagicMock()
+        mock_structured_llm.invoke.return_value = mock_parsed_output
+
         mock_llm = MagicMock()
-        mock_llm.invoke.return_value.content = '''
-        {
-            "event_type": "create",
-            "title": "Team Meeting",
-            "start_time": "2026-01-15T14:00:00Z",
-            "end_time": "2026-01-15T15:00:00Z",
-            "participants": ["Alice"],
-            "resources": []
-        }
-        '''
+        mock_llm.with_structured_output.return_value = mock_structured_llm
+        # For regular invoke (query node uses this)
+        mock_llm.invoke.return_value.content = "Mock response"
         mock_get_llm.return_value = mock_llm
 
         graph = build_orchestrator_graph()
@@ -243,18 +271,38 @@ class TestInvokeOrchestrator:
         # Should have executed some nodes
         assert len(result.get("audit_log", [])) > 0
 
+    @patch("src.services.calendar_service.get_calendar_service")
     @patch("src.orchestrator.nodes.get_llm")
-    def test_query_workflow(self, mock_get_llm):
+    def test_query_workflow(self, mock_get_llm, mock_get_calendar_service):
         """Test query workflow path."""
-        # Mock LLM responses
-        mock_llm = MagicMock()
+        from src.agents.state import NLParserOutput
 
-        # First call: NL Parser identifies query with complete data for high confidence
-        # Second call: Query agent answers
-        mock_llm.invoke.side_effect = [
-            MagicMock(content='{"event_type": "query", "title": "Calendar Check", "start_time": "2026-01-15T00:00:00Z", "participants": ["user"]}'),
-            MagicMock(content="You have 2 events tomorrow."),
-        ]
+        # Mock calendar service
+        mock_service = MagicMock()
+        mock_service.get_events_in_range.return_value = []
+        mock_get_calendar_service.return_value = mock_service
+
+        # Create mock NLParserOutput for query type
+        mock_parsed_output = NLParserOutput(
+            event_type="query",
+            title="Calendar Check",
+            start_time="2026-01-15T00:00:00Z",
+            end_time=None,
+            participants=["user"],
+            resources=[],
+            priority=None,
+            flexibility=None,
+            recurrence_rule=None,
+        )
+
+        # Setup mock for structured output
+        mock_structured_llm = MagicMock()
+        mock_structured_llm.invoke.return_value = mock_parsed_output
+
+        mock_llm = MagicMock()
+        mock_llm.with_structured_output.return_value = mock_structured_llm
+        # For regular invoke (query node uses this)
+        mock_llm.invoke.return_value.content = "You have 2 events tomorrow."
         mock_get_llm.return_value = mock_llm
 
         graph = build_orchestrator_graph()
@@ -272,9 +320,27 @@ class TestInvokeOrchestrator:
     @patch("src.orchestrator.nodes.get_llm")
     def test_low_confidence_clarification(self, mock_get_llm):
         """Test low confidence triggers clarification."""
+        from src.agents.state import NLParserOutput
+
+        # Create mock NLParserOutput with minimal data to trigger low confidence
+        mock_parsed_output = NLParserOutput(
+            event_type="create",
+            title=None,
+            start_time=None,
+            end_time=None,
+            participants=[],
+            resources=[],
+            priority=None,
+            flexibility=None,
+            recurrence_rule=None,
+        )
+
+        # Setup mock for structured output
+        mock_structured_llm = MagicMock()
+        mock_structured_llm.invoke.return_value = mock_parsed_output
+
         mock_llm = MagicMock()
-        # Return minimal data to trigger low confidence
-        mock_llm.invoke.return_value.content = '{"event_type": "create"}'
+        mock_llm.with_structured_output.return_value = mock_structured_llm
         mock_get_llm.return_value = mock_llm
 
         graph = build_orchestrator_graph()

@@ -19,11 +19,10 @@ from src.models.base import Base
 
 # Import all models so Alembic can detect them for autogenerate
 # This is critical - if a model isn't imported here, Alembic won't detect it
+# Note: Events are stored in Google Calendar, not locally
 from src.models.family import FamilyMember, Calendar  # noqa: F401
-from src.models.events import Event, EventParticipant  # noqa: F401
-from src.models.resources import Resource, ResourceReservation  # noqa: F401
+from src.models.resources import Resource  # noqa: F401
 from src.models.constraints import Constraint  # noqa: F401
-from src.models.conflicts import Conflict  # noqa: F401
 
 # Alembic Config object
 config = context.config

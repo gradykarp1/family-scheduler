@@ -1,26 +1,20 @@
 """
-Unit tests for Resource and ResourceReservation models.
+Unit tests for Resource model.
 
 Tests:
 - Resource creation and types
 - Capacity model (exclusive vs shared resources)
-- ResourceReservation creation and relationships
-- Time-range reservations
-- Reservation status workflow
-- Quantity reserved vs available capacity
+- Google Calendar ID for availability tracking
 - Resource metadata JSON field
+- Soft deletion
 """
 
-import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy.orm import Session
 
-from src.models.resources import Resource, ResourceReservation
-from src.models.family import FamilyMember
-from src.models.events import Event
-from src.models.family import Calendar
+from src.models.resources import Resource
 
 
 class TestResource:
@@ -158,6 +152,38 @@ class TestResource:
         assert len(garage_resources) == 1
         assert garage_resources[0].name == "Garage Tools"
 
+    def test_resource_with_google_calendar(self, db_session: Session):
+        """Test resource with Google Calendar for availability tracking."""
+        resource = Resource(
+            name="Conference Room A",
+            resource_type="room",
+            capacity=10,
+            location="2nd Floor",
+            active=True,
+            google_calendar_id="conference.a@resource.calendar.google.com",
+            resource_metadata={"has_projector": True}
+        )
+        db_session.add(resource)
+        db_session.commit()
+        db_session.refresh(resource)
+
+        assert resource.google_calendar_id == "conference.a@resource.calendar.google.com"
+
+    def test_resource_without_google_calendar(self, db_session: Session):
+        """Test resource without Google Calendar (no availability tracking)."""
+        resource = Resource(
+            name="Hand Tools",
+            resource_type="equipment",
+            capacity=1,
+            active=True,
+            resource_metadata={}
+        )
+        db_session.add(resource)
+        db_session.commit()
+        db_session.refresh(resource)
+
+        assert resource.google_calendar_id is None
+
     def test_resource_metadata_json(self, db_session: Session):
         """Test storing complex metadata in JSON field."""
         metadata = {
@@ -227,407 +253,48 @@ class TestResource:
         assert "vehicle" in repr_str
         assert "capacity=1" in repr_str
 
-
-class TestResourceReservation:
-    """Test ResourceReservation model functionality."""
-
-    def test_create_reservation(self, db_session: Session):
-        """Test creating a basic reservation."""
-        member = FamilyMember(name="Reserver", role="parent", preferences={})
-        resource = Resource(
-            name="Family Car",
-            resource_type="vehicle",
-            capacity=1,
-            active=True,
-            resource_metadata={}
-        )
-        db_session.add_all([member, resource])
+    def test_query_resources_by_type(self, db_session: Session):
+        """Test querying resources by type."""
+        resources = [
+            Resource(name="Car 1", resource_type="vehicle", capacity=1, active=True, resource_metadata={}),
+            Resource(name="Car 2", resource_type="vehicle", capacity=1, active=True, resource_metadata={}),
+            Resource(name="Room 1", resource_type="room", capacity=1, active=True, resource_metadata={}),
+        ]
+        db_session.add_all(resources)
         db_session.commit()
 
-        reservation = ResourceReservation(
-            resource_id=resource.id,
-            reserved_by=member.id,
-            start_time=datetime(2026, 2, 15, 10, 0, tzinfo=timezone.utc),
-            end_time=datetime(2026, 2, 15, 12, 0, tzinfo=timezone.utc),
-            quantity_reserved=1,
-            status="proposed",
-            notes="Need for grocery shopping"
-        )
-        db_session.add(reservation)
-        db_session.commit()
-        db_session.refresh(reservation)
+        vehicles = db_session.query(Resource).filter_by(resource_type="vehicle").all()
+        assert len(vehicles) == 2
 
-        assert reservation.id is not None
-        assert reservation.resource_id == resource.id
-        assert reservation.reserved_by == member.id
-        assert reservation.quantity_reserved == 1
-        assert reservation.status == "proposed"
-        assert reservation.notes == "Need for grocery shopping"
-        assert reservation.created_at is not None
-        assert reservation.deleted_at is None
+        rooms = db_session.query(Resource).filter_by(resource_type="room").all()
+        assert len(rooms) == 1
 
-    def test_reservation_linked_to_event(self, db_session: Session):
-        """Test reservation linked to an event."""
-        member = FamilyMember(name="Member", role="parent", preferences={})
-        calendar = Calendar(
-            name="Calendar",
-            calendar_type="personal",
-            owner_id=member.id,
-            visibility="private"
-        )
-        resource = Resource(
-            name="Conference Room",
-            resource_type="room",
-            capacity=1,
-            active=True,
-            resource_metadata={}
-        )
-        db_session.add_all([member, calendar, resource])
-        db_session.commit()
-
-        event = Event(
-            calendar_id=calendar.id,
-            title="Team Meeting",
-            start_time=datetime(2026, 2, 15, 10, 0, tzinfo=timezone.utc),
-            end_time=datetime(2026, 2, 15, 11, 0, tzinfo=timezone.utc),
-            status="confirmed",
-            priority="medium",
-            flexibility="fixed",
-            created_by=member.id,
-            event_metadata={}
-        )
-        db_session.add(event)
-        db_session.commit()
-
-        reservation = ResourceReservation(
-            resource_id=resource.id,
-            event_id=event.id,
-            reserved_by=member.id,
-            start_time=event.start_time,
-            end_time=event.end_time,
-            quantity_reserved=1,
-            status="confirmed"
-        )
-        db_session.add(reservation)
-        db_session.commit()
-        db_session.refresh(reservation)
-
-        # Verify relationships
-        assert reservation.event_id == event.id
-        assert reservation.event.title == "Team Meeting"
-        assert reservation.resource.name == "Conference Room"
-
-    def test_reservation_standalone_no_event(self, db_session: Session):
-        """Test standalone reservation (not linked to event)."""
-        member = FamilyMember(name="Member", role="parent", preferences={})
-        resource = Resource(
-            name="Tools",
-            resource_type="equipment",
-            capacity=1,
-            active=True,
-            resource_metadata={}
-        )
-        db_session.add_all([member, resource])
-        db_session.commit()
-
-        reservation = ResourceReservation(
-            resource_id=resource.id,
-            event_id=None,  # No event linkage
-            reserved_by=member.id,
-            start_time=datetime(2026, 2, 15, 10, 0, tzinfo=timezone.utc),
-            end_time=datetime(2026, 2, 15, 12, 0, tzinfo=timezone.utc),
-            quantity_reserved=1,
-            status="confirmed",
-            notes="Maintenance block"
-        )
-        db_session.add(reservation)
-        db_session.commit()
-
-        assert reservation.event_id is None
-        assert reservation.event is None
-
-    def test_reservation_status_values(self, db_session: Session):
-        """Test different reservation status values."""
-        member = FamilyMember(name="Member", role="parent", preferences={})
-        resource = Resource(
-            name="Resource",
-            resource_type="equipment",
-            capacity=3,
-            active=True,
-            resource_metadata={}
-        )
-        db_session.add_all([member, resource])
-        db_session.commit()
-
-        statuses = ["proposed", "confirmed", "cancelled"]
-
-        for i, status in enumerate(statuses):
-            reservation = ResourceReservation(
-                resource_id=resource.id,
-                reserved_by=member.id,
-                start_time=datetime(2026, 2, 15, 10+i, 0, tzinfo=timezone.utc),
-                end_time=datetime(2026, 2, 15, 11+i, 0, tzinfo=timezone.utc),
-                quantity_reserved=1,
-                status=status
-            )
-            db_session.add(reservation)
-
-        db_session.commit()
-
-        reservations = db_session.query(ResourceReservation).all()
-        saved_statuses = {r.status for r in reservations}
-        assert saved_statuses == set(statuses)
-
-    def test_reservation_quantity_for_shared_resource(self, db_session: Session):
-        """Test reserving different quantities from shared resource."""
-        member = FamilyMember(name="Member", role="parent", preferences={})
-        resource = Resource(
-            name="Laptop Pool",
-            resource_type="equipment",
-            capacity=5,  # 5 laptops available
-            active=True,
-            resource_metadata={}
-        )
-        db_session.add_all([member, resource])
-        db_session.commit()
-
-        # Reserve 2 laptops
-        reservation = ResourceReservation(
-            resource_id=resource.id,
-            reserved_by=member.id,
-            start_time=datetime(2026, 2, 15, 10, 0, tzinfo=timezone.utc),
-            end_time=datetime(2026, 2, 15, 12, 0, tzinfo=timezone.utc),
-            quantity_reserved=2,  # Taking 2 out of 5
-            status="confirmed"
-        )
-        db_session.add(reservation)
-        db_session.commit()
-
-        assert reservation.quantity_reserved == 2
-        # 3 laptops should still be available (capacity - quantity_reserved)
-
-    def test_reservation_time_range_overlap_detection(self, db_session: Session):
-        """Test detecting overlapping reservations."""
-        member = FamilyMember(name="Member", role="parent", preferences={})
-        resource = Resource(
-            name="Conference Room",
-            resource_type="room",
-            capacity=1,
-            active=True,
-            resource_metadata={}
-        )
-        db_session.add_all([member, resource])
-        db_session.commit()
-
-        # Create first reservation
-        res1 = ResourceReservation(
-            resource_id=resource.id,
-            reserved_by=member.id,
-            start_time=datetime(2026, 2, 15, 10, 0, tzinfo=timezone.utc),
-            end_time=datetime(2026, 2, 15, 12, 0, tzinfo=timezone.utc),
-            quantity_reserved=1,
-            status="confirmed"
-        )
-        db_session.add(res1)
-        db_session.commit()
-
-        # Try to create overlapping reservation
-        res2 = ResourceReservation(
-            resource_id=resource.id,
-            reserved_by=member.id,
-            start_time=datetime(2026, 2, 15, 11, 0, tzinfo=timezone.utc),  # Overlaps!
-            end_time=datetime(2026, 2, 15, 13, 0, tzinfo=timezone.utc),
-            quantity_reserved=1,
-            status="proposed"
-        )
-        db_session.add(res2)
-        db_session.commit()
-
-        # Query overlapping reservations
-        overlapping = db_session.query(ResourceReservation).filter(
-            ResourceReservation.resource_id == resource.id,
-            ResourceReservation.status == "confirmed",
-            ResourceReservation.start_time < res2.end_time,
-            ResourceReservation.end_time > res2.start_time
-        ).all()
-
-        assert len(overlapping) >= 1
-        assert res1 in overlapping
-
-    def test_reservation_reserver_relationship(self, db_session: Session):
-        """Test reservation-reserver relationship."""
-        member = FamilyMember(name="Reserver", role="parent", preferences={})
-        resource = Resource(
-            name="Resource",
-            resource_type="equipment",
-            capacity=1,
-            active=True,
-            resource_metadata={}
-        )
-        db_session.add_all([member, resource])
-        db_session.commit()
-
-        reservation = ResourceReservation(
-            resource_id=resource.id,
-            reserved_by=member.id,
-            start_time=datetime(2026, 2, 15, 10, 0, tzinfo=timezone.utc),
-            end_time=datetime(2026, 2, 15, 12, 0, tzinfo=timezone.utc),
-            quantity_reserved=1,
-            status="confirmed"
-        )
-        db_session.add(reservation)
-        db_session.commit()
-        db_session.refresh(reservation)
-
-        # Verify relationship
-        assert reservation.reserver is not None
-        assert reservation.reserver.name == "Reserver"
-
-    def test_resource_reservations_relationship(self, db_session: Session):
-        """Test accessing all reservations for a resource."""
-        member = FamilyMember(name="Member", role="parent", preferences={})
-        resource = Resource(
-            name="Popular Resource",
-            resource_type="equipment",
-            capacity=1,
-            active=True,
-            resource_metadata={}
-        )
-        db_session.add_all([member, resource])
-        db_session.commit()
-
-        # Create multiple reservations
-        for i in range(3):
-            reservation = ResourceReservation(
-                resource_id=resource.id,
-                reserved_by=member.id,
-                start_time=datetime(2026, 2, 15+i, 10, 0, tzinfo=timezone.utc),
-                end_time=datetime(2026, 2, 15+i, 12, 0, tzinfo=timezone.utc),
-                quantity_reserved=1,
-                status="confirmed"
-            )
-            db_session.add(reservation)
-
-        db_session.commit()
-        db_session.refresh(resource)
-
-        # Verify resource has 3 reservations
-        assert len(resource.reservations) == 3
-
-    def test_query_reservations_by_date_range(self, db_session: Session):
-        """Test querying reservations by date range."""
-        member = FamilyMember(name="Member", role="parent", preferences={})
-        resource = Resource(
-            name="Resource",
-            resource_type="equipment",
-            capacity=1,
-            active=True,
-            resource_metadata={}
-        )
-        db_session.add_all([member, resource])
-        db_session.commit()
-
-        # Create reservations on different dates
-        reservations = [
-            ResourceReservation(
-                resource_id=resource.id,
-                reserved_by=member.id,
-                start_time=datetime(2026, 2, 10, 10, 0, tzinfo=timezone.utc),
-                end_time=datetime(2026, 2, 10, 12, 0, tzinfo=timezone.utc),
-                quantity_reserved=1,
-                status="confirmed"
+    def test_query_resources_with_calendar(self, db_session: Session):
+        """Test querying resources that have Google Calendar tracking."""
+        resources = [
+            Resource(
+                name="Room A",
+                resource_type="room",
+                capacity=1,
+                active=True,
+                google_calendar_id="room.a@resource.calendar.google.com",
+                resource_metadata={}
             ),
-            ResourceReservation(
-                resource_id=resource.id,
-                reserved_by=member.id,
-                start_time=datetime(2026, 2, 15, 10, 0, tzinfo=timezone.utc),
-                end_time=datetime(2026, 2, 15, 12, 0, tzinfo=timezone.utc),
-                quantity_reserved=1,
-                status="confirmed"
-            ),
-            ResourceReservation(
-                resource_id=resource.id,
-                reserved_by=member.id,
-                start_time=datetime(2026, 2, 20, 10, 0, tzinfo=timezone.utc),
-                end_time=datetime(2026, 2, 20, 12, 0, tzinfo=timezone.utc),
-                quantity_reserved=1,
-                status="confirmed"
+            Resource(
+                name="Room B",
+                resource_type="room",
+                capacity=1,
+                active=True,
+                google_calendar_id=None,  # No calendar tracking
+                resource_metadata={}
             ),
         ]
-        db_session.add_all(reservations)
+        db_session.add_all(resources)
         db_session.commit()
 
-        # Query reservations in date range
-        range_start = datetime(2026, 2, 12, 0, 0, tzinfo=timezone.utc)
-        range_end = datetime(2026, 2, 18, 23, 59, tzinfo=timezone.utc)
-
-        in_range = db_session.query(ResourceReservation).filter(
-            ResourceReservation.start_time >= range_start,
-            ResourceReservation.end_time <= range_end
+        # Query resources with calendar
+        with_calendar = db_session.query(Resource).filter(
+            Resource.google_calendar_id.isnot(None)
         ).all()
-
-        assert len(in_range) == 1
-        assert in_range[0].start_time.day == 15
-
-    def test_reservation_soft_delete(self, db_session: Session):
-        """Test soft deletion of reservation."""
-        member = FamilyMember(name="Member", role="parent", preferences={})
-        resource = Resource(
-            name="Resource",
-            resource_type="equipment",
-            capacity=1,
-            active=True,
-            resource_metadata={}
-        )
-        db_session.add_all([member, resource])
-        db_session.commit()
-
-        reservation = ResourceReservation(
-            resource_id=resource.id,
-            reserved_by=member.id,
-            start_time=datetime(2026, 2, 15, 10, 0, tzinfo=timezone.utc),
-            end_time=datetime(2026, 2, 15, 12, 0, tzinfo=timezone.utc),
-            quantity_reserved=1,
-            status="confirmed"
-        )
-        db_session.add(reservation)
-        db_session.commit()
-        reservation_id = reservation.id
-
-        # Soft delete
-        reservation.deleted_at = datetime.now(timezone.utc)
-        db_session.commit()
-
-        # Verify still in database
-        deleted_res = db_session.query(ResourceReservation).filter_by(id=reservation_id).first()
-        assert deleted_res is not None
-        assert deleted_res.deleted_at is not None
-
-    def test_reservation_repr(self, db_session: Session):
-        """Test string representation."""
-        member = FamilyMember(name="Member", role="parent", preferences={})
-        resource = Resource(
-            name="Resource",
-            resource_type="equipment",
-            capacity=1,
-            active=True,
-            resource_metadata={}
-        )
-        db_session.add_all([member, resource])
-        db_session.commit()
-
-        reservation = ResourceReservation(
-            resource_id=resource.id,
-            reserved_by=member.id,
-            start_time=datetime(2026, 2, 15, 10, 0, tzinfo=timezone.utc),
-            end_time=datetime(2026, 2, 15, 12, 0, tzinfo=timezone.utc),
-            quantity_reserved=1,
-            status="confirmed"
-        )
-        db_session.add(reservation)
-        db_session.commit()
-
-        repr_str = repr(reservation)
-        assert "ResourceReservation" in repr_str
-        assert str(resource.id) in repr_str
-        assert "confirmed" in repr_str
+        assert len(with_calendar) == 1
+        assert with_calendar[0].name == "Room A"

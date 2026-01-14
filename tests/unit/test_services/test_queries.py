@@ -1,27 +1,38 @@
 """
 Unit tests for the queries service.
 
-Tests event and calendar query functions.
+Tests family configuration query functions for:
+- Family members
+- Calendars
+- Resources
+- Constraints
+
+Note: Events are stored in Google Calendar, not the local database.
 """
 
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from src.models.family import FamilyMember, Calendar
-from src.models.events import Event, EventParticipant
-from src.models.conflicts import Conflict
+from src.models.resources import Resource
+from src.models.constraints import Constraint
 from src.services.queries import (
-    get_events_in_range,
-    get_events_for_member,
-    get_event_by_id,
-    find_overlapping_events,
-    get_upcoming_events,
-    get_member_schedule,
-    find_busy_members,
-    find_available_members,
-    get_unresolved_conflicts,
+    get_all_family_members,
+    get_family_member_by_id,
+    get_family_member_by_email,
+    get_family_members_by_role,
+    get_all_calendars,
+    get_calendars_by_owner,
     get_calendar_by_id,
+    get_calendar_by_google_id,
+    get_calendars_by_type,
+    get_all_resources,
+    get_resource_by_id,
+    get_resources_by_type,
+    get_all_constraints,
+    get_constraints_for_member,
+    get_constraints_by_type,
 )
 
 
@@ -32,16 +43,19 @@ def members(db_session):
         name="Mom",
         email="mom@test.com",
         role="parent",
+        preferences={"timezone": "America/Los_Angeles"}
     )
     dad = FamilyMember(
         name="Dad",
         email="dad@test.com",
         role="parent",
+        preferences={"timezone": "America/Los_Angeles"}
     )
     kid = FamilyMember(
         name="Kid",
         email="kid@test.com",
         role="child",
+        preferences={"timezone": "America/Los_Angeles"}
     )
     db_session.add_all([mom, dad, kid])
     db_session.commit()
@@ -49,345 +63,302 @@ def members(db_session):
 
 
 @pytest.fixture
-def calendar(db_session, members):
-    """Create a test calendar."""
-    cal = Calendar(
-        owner_id=members["mom"].id,
+def calendars(db_session, members):
+    """Create test calendars."""
+    family_cal = Calendar(
         name="Family Calendar",
         calendar_type="family",
+        google_calendar_id="family@group.calendar.google.com",
+        visibility="family"
     )
-    db_session.add(cal)
+    mom_cal = Calendar(
+        name="Mom's Calendar",
+        calendar_type="personal",
+        google_calendar_id="mom@calendar.google.com",
+        owner_id=members["mom"].id,
+        visibility="private"
+    )
+    dad_cal = Calendar(
+        name="Dad's Calendar",
+        calendar_type="personal",
+        google_calendar_id="dad@calendar.google.com",
+        owner_id=members["dad"].id,
+        visibility="private"
+    )
+    db_session.add_all([family_cal, mom_cal, dad_cal])
     db_session.commit()
-    return cal
+    return {"family": family_cal, "mom": mom_cal, "dad": dad_cal}
 
 
 @pytest.fixture
-def events(db_session, calendar, members):
-    """Create test events."""
-    now = datetime.utcnow()
-
-    event1 = Event(
-        calendar_id=calendar.id,
-        title="Morning Meeting",
-        start_time=now + timedelta(days=1, hours=9),
-        end_time=now + timedelta(days=1, hours=10),
-        status="confirmed",
-        created_by=members["mom"].id,
+def resources(db_session):
+    """Create test resources."""
+    car = Resource(
+        name="Family Car",
+        resource_type="vehicle",
+        capacity=1,
+        active=True,
+        resource_metadata={"color": "blue"}
     )
-    event2 = Event(
-        calendar_id=calendar.id,
-        title="Lunch",
-        start_time=now + timedelta(days=1, hours=12),
-        end_time=now + timedelta(days=1, hours=13),
-        status="confirmed",
-        created_by=members["mom"].id,
+    room = Resource(
+        name="Conference Room",
+        resource_type="room",
+        capacity=10,
+        active=True,
+        google_calendar_id="room@resource.calendar.google.com",
+        resource_metadata={"has_projector": True}
     )
-    event3 = Event(
-        calendar_id=calendar.id,
-        title="Proposed Event",
-        start_time=now + timedelta(days=2, hours=14),
-        end_time=now + timedelta(days=2, hours=15),
-        status="proposed",
-        created_by=members["dad"].id,
+    inactive = Resource(
+        name="Old Laptop",
+        resource_type="equipment",
+        capacity=1,
+        active=False,
+        resource_metadata={}
     )
-    event4 = Event(
-        calendar_id=calendar.id,
-        title="Cancelled Event",
-        start_time=now + timedelta(days=3, hours=10),
-        end_time=now + timedelta(days=3, hours=11),
-        status="cancelled",
-        created_by=members["mom"].id,
-    )
-
-    db_session.add_all([event1, event2, event3, event4])
+    db_session.add_all([car, room, inactive])
     db_session.commit()
+    return {"car": car, "room": room, "inactive": inactive}
 
-    # Add participants
-    db_session.add(EventParticipant(event_id=event1.id, family_member_id=members["mom"].id))
-    db_session.add(EventParticipant(event_id=event1.id, family_member_id=members["dad"].id))
-    db_session.add(EventParticipant(event_id=event2.id, family_member_id=members["kid"].id))
+
+@pytest.fixture
+def constraints(db_session, members):
+    """Create test constraints."""
+    work_hours = Constraint(
+        name="Work Hours",
+        description="No events during work hours",
+        family_member_id=members["mom"].id,
+        constraint_type="availability",
+        level="hard",
+        priority=10,
+        rule={"type": "time_window", "start": "09:00", "end": "17:00"},
+        active=True
+    )
+    school = Constraint(
+        name="School Hours",
+        description="Kid is at school",
+        family_member_id=members["kid"].id,
+        constraint_type="availability",
+        level="hard",
+        priority=8,
+        rule={"type": "time_window", "start": "08:00", "end": "15:00"},
+        active=True
+    )
+    inactive_constraint = Constraint(
+        name="Old Constraint",
+        description="No longer applies",
+        family_member_id=members["dad"].id,
+        constraint_type="preference",
+        level="soft",
+        priority=1,
+        rule={},
+        active=False
+    )
+    db_session.add_all([work_hours, school, inactive_constraint])
     db_session.commit()
+    return {"work_hours": work_hours, "school": school, "inactive": inactive_constraint}
 
-    return {"meeting": event1, "lunch": event2, "proposed": event3, "cancelled": event4}
 
+class TestFamilyMemberQueries:
+    """Test family member query functions."""
 
-class TestGetEventsInRange:
-    """Test get_events_in_range function."""
+    def test_get_all_family_members(self, db_session, members):
+        """Test getting all family members."""
+        result = get_all_family_members(db_session)
 
-    def test_get_events_in_range(self, db_session, calendar, events):
-        """Test getting events within a time range."""
-        now = datetime.utcnow()
-        start = now + timedelta(days=1)
-        end = now + timedelta(days=3)  # Extended to include proposed event on day 2
-
-        result = get_events_in_range(db_session, calendar.id, start, end)
-
-        # Should include meeting, lunch, and proposed (not cancelled)
         assert len(result) == 3
-        titles = {e.title for e in result}
-        assert "Morning Meeting" in titles
-        assert "Lunch" in titles
-        assert "Proposed Event" in titles
+        names = {m.name for m in result}
+        assert names == {"Mom", "Dad", "Kid"}
 
-    def test_exclude_proposed(self, db_session, calendar, events):
-        """Test excluding proposed events."""
-        now = datetime.utcnow()
-        start = now + timedelta(days=1)
-        end = now + timedelta(days=3)
+    def test_get_all_family_members_excludes_deleted(self, db_session, members):
+        """Test that soft-deleted members are excluded by default."""
+        members["kid"].deleted_at = datetime.now(timezone.utc)
+        db_session.commit()
 
-        result = get_events_in_range(
-            db_session, calendar.id, start, end, include_proposed=False
-        )
+        result = get_all_family_members(db_session)
 
-        titles = {e.title for e in result}
-        assert "Proposed Event" not in titles
+        assert len(result) == 2
+        names = {m.name for m in result}
+        assert "Kid" not in names
 
-    def test_include_cancelled(self, db_session, calendar, events):
-        """Test including cancelled events."""
-        now = datetime.utcnow()
-        start = now + timedelta(days=1)
-        end = now + timedelta(days=4)
+    def test_get_all_family_members_include_deleted(self, db_session, members):
+        """Test including soft-deleted members."""
+        members["kid"].deleted_at = datetime.now(timezone.utc)
+        db_session.commit()
 
-        result = get_events_in_range(
-            db_session, calendar.id, start, end, include_cancelled=True
-        )
+        result = get_all_family_members(db_session, include_deleted=True)
 
-        titles = {e.title for e in result}
-        assert "Cancelled Event" in titles
+        assert len(result) == 3
 
-    def test_events_ordered_by_start_time(self, db_session, calendar, events):
-        """Test events are returned in chronological order."""
-        now = datetime.utcnow()
-        start = now + timedelta(days=1)
-        end = now + timedelta(days=2)
-
-        result = get_events_in_range(db_session, calendar.id, start, end)
-
-        for i in range(len(result) - 1):
-            assert result[i].start_time <= result[i + 1].start_time
-
-
-class TestGetEventsForMember:
-    """Test get_events_for_member function."""
-
-    def test_get_member_events(self, db_session, members, events):
-        """Test getting events for a specific member."""
-        now = datetime.utcnow()
-        start = now
-        end = now + timedelta(days=5)
-
-        result = get_events_for_member(
-            db_session, members["mom"].id, start, end
-        )
-
-        # Mom participates in Morning Meeting
-        assert len(result) >= 1
-        titles = {e.title for e in result}
-        assert "Morning Meeting" in titles
-
-    def test_member_with_no_events(self, db_session, members):
-        """Test member with no events."""
-        now = datetime.utcnow()
-
-        result = get_events_for_member(
-            db_session, members["kid"].id, now - timedelta(days=30), now - timedelta(days=1)
-        )
-
-        assert len(result) == 0
-
-
-class TestGetEventById:
-    """Test get_event_by_id function."""
-
-    def test_get_existing_event(self, db_session, events):
-        """Test getting an existing event."""
-        result = get_event_by_id(db_session, events["meeting"].id)
+    def test_get_family_member_by_id(self, db_session, members):
+        """Test getting a member by ID."""
+        result = get_family_member_by_id(db_session, members["mom"].id)
 
         assert result is not None
-        assert result.title == "Morning Meeting"
-        assert result.participants is not None  # Relationship loaded
+        assert result.name == "Mom"
+        assert result.email == "mom@test.com"
 
-    def test_get_nonexistent_event(self, db_session):
-        """Test getting a non-existent event."""
-        result = get_event_by_id(db_session, uuid4())
+    def test_get_family_member_by_id_not_found(self, db_session):
+        """Test getting a non-existent member."""
+        result = get_family_member_by_id(db_session, uuid4())
         assert result is None
 
-    def test_exclude_deleted_by_default(self, db_session, events):
-        """Test that soft-deleted events are excluded by default."""
-        # Soft delete the event
-        events["meeting"].deleted_at = datetime.utcnow()
-        db_session.commit()
+    def test_get_family_member_by_email(self, db_session, members):
+        """Test getting a member by email."""
+        result = get_family_member_by_email(db_session, "dad@test.com")
 
-        result = get_event_by_id(db_session, events["meeting"].id)
-        assert result is None
-
-    def test_include_deleted(self, db_session, events):
-        """Test including soft-deleted events."""
-        events["meeting"].deleted_at = datetime.utcnow()
-        db_session.commit()
-
-        result = get_event_by_id(db_session, events["meeting"].id, include_deleted=True)
         assert result is not None
+        assert result.name == "Dad"
 
+    def test_get_family_member_by_email_not_found(self, db_session, members):
+        """Test getting a member by non-existent email."""
+        result = get_family_member_by_email(db_session, "unknown@test.com")
+        assert result is None
 
-class TestFindOverlappingEvents:
-    """Test find_overlapping_events function."""
+    def test_get_family_members_by_role(self, db_session, members):
+        """Test getting members by role."""
+        parents = get_family_members_by_role(db_session, "parent")
+        children = get_family_members_by_role(db_session, "child")
 
-    def test_find_overlapping(self, db_session, calendar, events):
-        """Test finding events that overlap with a time slot."""
-        # Get time of the morning meeting
-        meeting_start = events["meeting"].start_time
-        meeting_end = events["meeting"].end_time
-
-        # Check for overlap starting in the middle of the meeting
-        result = find_overlapping_events(
-            db_session,
-            calendar.id,
-            meeting_start + timedelta(minutes=30),
-            meeting_end + timedelta(minutes=30),
-        )
-
-        assert len(result) >= 1
-        assert any(e.id == events["meeting"].id for e in result)
-
-    def test_no_overlap(self, db_session, calendar, events):
-        """Test when there's no overlap."""
-        now = datetime.utcnow()
-
-        result = find_overlapping_events(
-            db_session,
-            calendar.id,
-            now + timedelta(days=10),
-            now + timedelta(days=10, hours=1),
-        )
-
-        assert len(result) == 0
-
-    def test_exclude_specific_event(self, db_session, calendar, events):
-        """Test excluding a specific event from overlap check."""
-        meeting = events["meeting"]
-
-        result = find_overlapping_events(
-            db_session,
-            calendar.id,
-            meeting.start_time,
-            meeting.end_time,
-            exclude_event_id=meeting.id,
-        )
-
-        assert not any(e.id == meeting.id for e in result)
-
-
-class TestGetUpcomingEvents:
-    """Test get_upcoming_events function."""
-
-    def test_get_upcoming(self, db_session, calendar, events):
-        """Test getting upcoming events."""
-        now = datetime.utcnow()
-
-        result = get_upcoming_events(db_session, calendar.id, limit=10, after=now)
-
-        # Only confirmed events
-        assert all(e.status == "confirmed" for e in result)
-        assert all(e.start_time >= now for e in result)
-
-    def test_limit_results(self, db_session, calendar, events):
-        """Test that limit is respected."""
-        now = datetime.utcnow()
-
-        result = get_upcoming_events(db_session, calendar.id, limit=1, after=now)
-
-        assert len(result) <= 1
-
-
-class TestMemberScheduleQueries:
-    """Test member schedule query functions."""
-
-    def test_find_busy_members(self, db_session, members, events):
-        """Test finding members who are busy during a time slot."""
-        meeting = events["meeting"]
-        member_ids = [members["mom"].id, members["dad"].id, members["kid"].id]
-
-        busy = find_busy_members(
-            db_session,
-            member_ids,
-            meeting.start_time,
-            meeting.end_time,
-        )
-
-        # Mom and Dad are in the meeting
-        assert members["mom"].id in busy
-        assert members["dad"].id in busy
-
-    def test_find_available_members(self, db_session, members, events):
-        """Test finding members who are available during a time slot."""
-        meeting = events["meeting"]
-        member_ids = [members["mom"].id, members["dad"].id, members["kid"].id]
-
-        available = find_available_members(
-            db_session,
-            member_ids,
-            meeting.start_time,
-            meeting.end_time,
-        )
-
-        # Kid is not in the meeting
-        assert members["kid"].id in available
-
-
-class TestConflictQueries:
-    """Test conflict query functions."""
-
-    def test_get_unresolved_conflicts(self, db_session, calendar, members, events):
-        """Test getting unresolved conflicts."""
-        # Create a conflict
-        conflict = Conflict(
-            proposed_event_id=events["proposed"].id,
-            conflicting_event_id=events["meeting"].id,
-            conflict_type="time_overlap",
-            severity="high",
-            description="Events overlap in time",
-            affected_participants=[str(members["mom"].id)],
-            status="detected",
-        )
-        db_session.add(conflict)
-        db_session.commit()
-
-        result = get_unresolved_conflicts(db_session)
-
-        assert len(result) >= 1
-        assert any(c.id == conflict.id for c in result)
-
-    def test_get_conflicts_for_event(self, db_session, calendar, members, events):
-        """Test getting conflicts for a specific event."""
-        conflict = Conflict(
-            proposed_event_id=events["proposed"].id,
-            conflicting_event_id=events["meeting"].id,
-            conflict_type="time_overlap",
-            severity="high",
-            description="Events overlap in time",
-            affected_participants=[str(members["mom"].id)],
-            status="detected",
-        )
-        db_session.add(conflict)
-        db_session.commit()
-
-        result = get_unresolved_conflicts(db_session, event_id=events["proposed"].id)
-
-        assert len(result) >= 1
+        assert len(parents) == 2
+        assert len(children) == 1
+        assert children[0].name == "Kid"
 
 
 class TestCalendarQueries:
     """Test calendar query functions."""
 
-    def test_get_calendar_by_id(self, db_session, calendar):
+    def test_get_all_calendars(self, db_session, calendars):
+        """Test getting all calendars."""
+        result = get_all_calendars(db_session)
+
+        assert len(result) == 3
+        names = {c.name for c in result}
+        assert "Family Calendar" in names
+
+    def test_get_calendars_by_owner(self, db_session, members, calendars):
+        """Test getting calendars by owner."""
+        result = get_calendars_by_owner(db_session, members["mom"].id)
+
+        assert len(result) == 1
+        assert result[0].name == "Mom's Calendar"
+
+    def test_get_calendar_by_id(self, db_session, calendars):
         """Test getting a calendar by ID."""
-        result = get_calendar_by_id(db_session, calendar.id)
+        result = get_calendar_by_id(db_session, calendars["family"].id)
 
         assert result is not None
         assert result.name == "Family Calendar"
 
-    def test_get_nonexistent_calendar(self, db_session):
+    def test_get_calendar_by_id_not_found(self, db_session):
         """Test getting a non-existent calendar."""
         result = get_calendar_by_id(db_session, uuid4())
         assert result is None
+
+    def test_get_calendar_by_google_id(self, db_session, calendars):
+        """Test getting a calendar by Google Calendar ID."""
+        result = get_calendar_by_google_id(
+            db_session, "mom@calendar.google.com"
+        )
+
+        assert result is not None
+        assert result.name == "Mom's Calendar"
+
+    def test_get_calendar_by_google_id_not_found(self, db_session, calendars):
+        """Test getting a calendar by non-existent Google ID."""
+        result = get_calendar_by_google_id(db_session, "unknown@calendar.google.com")
+        assert result is None
+
+    def test_get_calendars_by_type(self, db_session, calendars):
+        """Test getting calendars by type."""
+        personal = get_calendars_by_type(db_session, "personal")
+        family = get_calendars_by_type(db_session, "family")
+
+        assert len(personal) == 2
+        assert len(family) == 1
+
+
+class TestResourceQueries:
+    """Test resource query functions."""
+
+    def test_get_all_resources_active_only(self, db_session, resources):
+        """Test getting only active resources."""
+        result = get_all_resources(db_session, active_only=True)
+
+        assert len(result) == 2
+        names = {r.name for r in result}
+        assert "Old Laptop" not in names
+
+    def test_get_all_resources_include_inactive(self, db_session, resources):
+        """Test getting all resources including inactive."""
+        result = get_all_resources(db_session, active_only=False)
+
+        assert len(result) == 3
+
+    def test_get_resource_by_id(self, db_session, resources):
+        """Test getting a resource by ID."""
+        result = get_resource_by_id(db_session, resources["car"].id)
+
+        assert result is not None
+        assert result.name == "Family Car"
+
+    def test_get_resource_by_id_not_found(self, db_session):
+        """Test getting a non-existent resource."""
+        result = get_resource_by_id(db_session, uuid4())
+        assert result is None
+
+    def test_get_resources_by_type(self, db_session, resources):
+        """Test getting resources by type."""
+        vehicles = get_resources_by_type(db_session, "vehicle")
+        rooms = get_resources_by_type(db_session, "room")
+        equipment = get_resources_by_type(db_session, "equipment", active_only=False)
+
+        assert len(vehicles) == 1
+        assert len(rooms) == 1
+        assert len(equipment) == 1
+
+
+class TestConstraintQueries:
+    """Test constraint query functions."""
+
+    def test_get_all_constraints_active_only(self, db_session, constraints):
+        """Test getting only active constraints."""
+        result = get_all_constraints(db_session, active_only=True)
+
+        assert len(result) == 2
+        names = {c.name for c in result}
+        assert "Old Constraint" not in names
+
+    def test_get_all_constraints_include_inactive(self, db_session, constraints):
+        """Test getting all constraints including inactive."""
+        result = get_all_constraints(db_session, active_only=False)
+
+        assert len(result) == 3
+
+    def test_constraints_ordered_by_priority(self, db_session, constraints):
+        """Test that constraints are ordered by priority (descending)."""
+        result = get_all_constraints(db_session, active_only=True)
+
+        # Higher priority first
+        assert result[0].priority >= result[1].priority
+
+    def test_get_constraints_for_member(self, db_session, members, constraints):
+        """Test getting constraints for a specific member."""
+        result = get_constraints_for_member(db_session, members["mom"].id)
+
+        assert len(result) == 1
+        assert result[0].name == "Work Hours"
+
+    def test_get_constraints_for_member_no_constraints(self, db_session, members, constraints):
+        """Test getting constraints for member with no active constraints."""
+        result = get_constraints_for_member(db_session, members["dad"].id)
+
+        # Dad only has an inactive constraint
+        assert len(result) == 0
+
+    def test_get_constraints_by_type(self, db_session, constraints):
+        """Test getting constraints by type."""
+        availability = get_constraints_by_type(db_session, "availability")
+        preference = get_constraints_by_type(db_session, "preference", active_only=False)
+
+        assert len(availability) == 2
+        assert len(preference) == 1

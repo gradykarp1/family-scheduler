@@ -3,7 +3,10 @@ Family and Calendar models.
 
 Entities:
 - FamilyMember: Represents a person in the family who participates in events
-- Calendar: Represents a calendar that contains events (personal, family, shared)
+- Calendar: Configuration for a Google Calendar (personal, family, shared)
+
+Note: Events are stored in Google Calendar, not the local database.
+This module stores family configuration and calendar references only.
 """
 
 import uuid
@@ -16,7 +19,6 @@ from src.models.base import BaseModel, get_json_type
 
 # Avoid circular imports for type hints
 if TYPE_CHECKING:
-    from src.models.events import Event, EventParticipant
     from src.models.constraints import Constraint
 
 
@@ -28,7 +30,7 @@ class FamilyMember(BaseModel):
     - Personal information (name, email, role)
     - Preferences for scheduling (stored as JSON)
     - A default calendar for their events
-    - Relationships to events, constraints, and calendars
+    - Relationships to constraints and calendars
     """
 
     __tablename__ = "family_members"
@@ -44,7 +46,7 @@ class FamilyMember(BaseModel):
         String(255),
         nullable=True,
         unique=True,
-        doc="Email address for notifications (optional)"
+        doc="Email address for notifications and Google Calendar sync"
     )
 
     role: Mapped[str] = mapped_column(
@@ -83,12 +85,6 @@ class FamilyMember(BaseModel):
         doc="Calendars owned by this family member"
     )
 
-    participations: Mapped[list["EventParticipant"]] = relationship(
-        "EventParticipant",
-        back_populates="family_member",
-        doc="Event participations for this family member"
-    )
-
     constraints: Mapped[list["Constraint"]] = relationship(
         "Constraint",
         back_populates="family_member",
@@ -109,18 +105,15 @@ class FamilyMember(BaseModel):
 
 class Calendar(BaseModel):
     """
-    Represents a calendar that contains events.
+    Configuration for a Google Calendar.
 
     Types of calendars:
     - Personal: Belongs to a specific family member
     - Family: Shared calendar for all family events
     - Shared: Shared with specific family members
 
-    Each calendar has:
-    - Name and type
-    - Owner (optional, for personal calendars)
-    - Visibility settings
-    - Collection of events
+    This model stores the reference to the Google Calendar ID,
+    not the events themselves (those are in Google Calendar).
     """
 
     __tablename__ = "calendars"
@@ -143,6 +136,13 @@ class Calendar(BaseModel):
         String(50),
         nullable=False,
         doc="Calendar type: 'personal', 'family', 'shared'"
+    )
+
+    # Google Calendar ID (the actual calendar in Google)
+    google_calendar_id: Mapped[Optional[str]] = mapped_column(
+        String(255),
+        nullable=True,
+        doc="Google Calendar ID for syncing events"
     )
 
     # Visual appearance
@@ -183,16 +183,11 @@ class Calendar(BaseModel):
         doc="Family members who use this as their default calendar"
     )
 
-    events: Mapped[list["Event"]] = relationship(
-        "Event",
-        back_populates="calendar",
-        doc="Events in this calendar"
-    )
-
     # Indexes
     __table_args__ = (
         Index("idx_calendar_type", "calendar_type"),
         Index("idx_calendar_owner", "owner_id"),
+        Index("idx_calendar_google_id", "google_calendar_id"),
         Index("idx_calendar_deleted", "deleted_at"),
     )
 

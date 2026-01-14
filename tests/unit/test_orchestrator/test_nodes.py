@@ -96,10 +96,28 @@ class TestNLParserNode:
 
     @patch("src.orchestrator.nodes.get_llm")
     def test_successful_parsing(self, mock_get_llm):
-        """Test successful NL parsing."""
-        # Mock LLM response
+        """Test successful NL parsing with structured output."""
+        from src.agents.state import NLParserOutput
+
+        # Create a mock NLParserOutput
+        mock_parsed_output = NLParserOutput(
+            event_type="create",
+            title="Meeting",
+            start_time="2026-01-15T14:00:00Z",
+            end_time=None,
+            participants=[],
+            resources=[],
+            priority=None,
+            flexibility=None,
+            recurrence_rule=None,
+        )
+
+        # Mock the structured output chain
+        mock_structured_llm = MagicMock()
+        mock_structured_llm.invoke.return_value = mock_parsed_output
+
         mock_llm = MagicMock()
-        mock_llm.invoke.return_value.content = '{"event_type": "create", "title": "Meeting", "start_time": "2026-01-15T14:00:00Z"}'
+        mock_llm.with_structured_output.return_value = mock_structured_llm
         mock_get_llm.return_value = mock_llm
 
         state: FamilySchedulerState = {
@@ -121,8 +139,8 @@ class TestNLParserNode:
         assert result["workflow_status"] == "in_progress"
 
     @patch("src.orchestrator.nodes.get_llm")
-    def test_llm_failure_returns_error_state(self, mock_get_llm):
-        """Test LLM failure returns error state."""
+    def test_llm_failure_uses_fallback(self, mock_get_llm):
+        """Test LLM failure uses fallback parser."""
         mock_get_llm.side_effect = Exception("API error")
 
         state: FamilySchedulerState = {
@@ -137,6 +155,30 @@ class TestNLParserNode:
 
         result = nl_parser_node(state)
 
+        # With fallback parser, it should continue with low confidence
+        assert result["workflow_status"] == "in_progress"
+        assert "nl_parser" in result["agent_outputs"]
+        assert result["agent_outputs"]["nl_parser"]["confidence"] == 0.3
+        assert "Fallback" in result["agent_outputs"]["nl_parser"]["explanation"]
+
+    @patch("src.orchestrator.nodes.get_llm")
+    def test_llm_failure_no_input_returns_error(self, mock_get_llm):
+        """Test LLM failure with empty input returns error state."""
+        mock_get_llm.side_effect = Exception("API error")
+
+        state: FamilySchedulerState = {
+            "user_input": "",
+            "user_id": "user_1",
+            "conversation_id": "conv_1",
+            "agent_outputs": {},
+            "audit_log": [],
+            "errors": [],
+            "workflow_status": "in_progress",
+        }
+
+        result = nl_parser_node(state)
+
+        # With empty input, fallback parser returns None, so it should fail
         assert result["workflow_status"] == "failed"
         assert len(result["errors"]) == 1
         assert result["errors"][0]["agent"] == "nl_parser"
@@ -170,8 +212,20 @@ class TestSchedulingNode:
         assert result["selected_time_slot"] is not None
         assert result["agent_outputs"]["scheduling"]["confidence"] == 0.95
 
-    def test_without_specified_time(self):
+    @patch("src.services.calendar_service.get_calendar_service")
+    def test_without_specified_time(self, mock_get_calendar_service):
         """Test scheduling without user-specified time."""
+        # Mock calendar service to return available slots
+        mock_service = MagicMock()
+        mock_service.find_available_slots.return_value = [
+            {
+                "start_time": "2026-01-15T09:00:00+00:00",
+                "end_time": "2026-01-15T10:00:00+00:00",
+                "score": 0.8,
+            }
+        ]
+        mock_get_calendar_service.return_value = mock_service
+
         state: FamilySchedulerState = {
             "user_input": "Schedule a meeting",
             "user_id": "user_1",
@@ -276,21 +330,32 @@ class TestResolutionNode:
 
     @patch("src.orchestrator.nodes.get_llm")
     def test_generates_resolutions(self, mock_get_llm):
-        """Test resolution generation."""
-        mock_llm = MagicMock()
-        mock_llm.invoke.return_value.content = '''
-        {
-            "proposed_resolutions": [
-                {
-                    "resolution_id": "res_1",
-                    "strategy": "move_event",
-                    "score": 0.9,
-                    "description": "Move to 3pm"
-                }
+        """Test resolution generation with structured output."""
+        from src.agents.state import ResolutionOutput, ProposedResolutionOutput
+
+        # Create a mock ResolutionOutput
+        mock_resolution_output = ResolutionOutput(
+            proposed_resolutions=[
+                ProposedResolutionOutput(
+                    resolution_id="res_1",
+                    strategy="move_event",
+                    score=0.9,
+                    description="Move to 3pm",
+                    changes=[],
+                    conflicts_resolved=["c1"],
+                    side_effects=[],
+                )
             ],
-            "recommended_resolution": "res_1"
-        }
-        '''
+            recommended_resolution="res_1",
+            analysis_summary="Analyzed conflict and found solution",
+        )
+
+        # Mock the structured output chain
+        mock_structured_llm = MagicMock()
+        mock_structured_llm.invoke.return_value = mock_resolution_output
+
+        mock_llm = MagicMock()
+        mock_llm.with_structured_output.return_value = mock_structured_llm
         mock_get_llm.return_value = mock_llm
 
         state: FamilySchedulerState = {
@@ -313,13 +378,42 @@ class TestResolutionNode:
         assert "resolution" in result["agent_outputs"]
         assert result["workflow_status"] == "awaiting_user"
 
+    def test_no_conflicts_returns_empty_resolution(self):
+        """Test that no conflicts results in empty resolution list."""
+        state: FamilySchedulerState = {
+            "user_input": "Schedule meeting",
+            "user_id": "user_1",
+            "conversation_id": "conv_1",
+            "parsed_event_data": {"title": "Meeting"},
+            "detected_conflicts": {
+                "has_conflicts": False,
+                "conflicts": [],
+            },
+            "agent_outputs": {},
+            "audit_log": [],
+            "workflow_status": "in_progress",
+        }
+
+        result = resolution_node(state)
+
+        resolution_data = result["agent_outputs"]["resolution"]["data"]
+        assert resolution_data["proposed_resolutions"] == []
+        assert result["agent_outputs"]["resolution"]["confidence"] == 1.0
+
 
 class TestQueryNode:
     """Test Query node."""
 
+    @patch("src.services.calendar_service.get_calendar_service")
     @patch("src.orchestrator.nodes.get_llm")
-    def test_answers_query(self, mock_get_llm):
+    def test_answers_query(self, mock_get_llm, mock_get_calendar_service):
         """Test query answering."""
+        # Mock calendar service
+        mock_service = MagicMock()
+        mock_service.get_events_in_range.return_value = []
+        mock_get_calendar_service.return_value = mock_service
+
+        # Mock LLM
         mock_llm = MagicMock()
         mock_llm.invoke.return_value.content = "You have a meeting at 2pm tomorrow."
         mock_get_llm.return_value = mock_llm
@@ -344,8 +438,17 @@ class TestQueryNode:
 class TestAutoConfirmNode:
     """Test Auto Confirm node."""
 
-    def test_creates_confirmed_event(self):
+    @patch("src.services.calendar_service.get_calendar_service")
+    def test_creates_confirmed_event(self, mock_get_calendar_service):
         """Test auto confirmation creates event."""
+        # Mock calendar service to return created event
+        mock_event = MagicMock()
+        mock_event.id = "created_event_123"
+        mock_event.title = "Team Meeting"
+        mock_service = MagicMock()
+        mock_service.create_event.return_value = mock_event
+        mock_get_calendar_service.return_value = mock_service
+
         state: FamilySchedulerState = {
             "user_input": "Schedule meeting at 2pm",
             "user_id": "user_1",
