@@ -284,3 +284,28 @@ class EventListResponse(BaseModel):
     total: int = Field(..., description="Total number of matching events")
     limit: int = Field(..., description="Limit used in query")
     offset: int = Field(..., description="Offset used in query")
+
+
+class EventDetailResponse(BaseModel):
+    """Response for a single event."""
+
+    id: str = Field(..., description="Event ID")
+    title: str = Field(..., description="Event title")
+    description: Optional[str] = Field(None, description="Event description")
+    start_time: str = Field(..., description="Start time (ISO 8601)")
+    end_time: str = Field(..., description="End time (ISO 8601)")
+    location: Optional[str] = Field(None, description="Event location")
+    all_day: bool = Field(default=False, description="Whether this is an all-day event")
+    status: str = Field(..., description="Event status")
+    calendar_id: str = Field(..., description="Calendar this event belongs to")
+    html_link: Optional[str] = Field(None, description="Link to view event in Google Calendar")
+    created_at: Optional[str] = Field(None, description="When the event was created")
+    updated_at: Optional[str] = Field(None, description="When the event was last updated")
+
+
+class DeleteEventResponse(BaseModel):
+    """Response for deleting an event."""
+
+    success: bool = Field(..., description="Whether deletion was successful")
+    event_id: str = Field(..., description="ID of deleted event")
+    message: str = Field(..., description="Status message")

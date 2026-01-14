@@ -5,7 +5,7 @@ Tests endpoint behavior using FastAPI TestClient.
 """
 
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 from fastapi.testclient import TestClient
 
@@ -19,6 +19,16 @@ def reset_orchestrator():
     """Reset orchestrator before each test."""
     import src.api.dependencies as deps
     deps._orchestrator = None
+
+
+@pytest.fixture
+def mock_calendar_service():
+    """Create a mock calendar service."""
+    mock_service = MagicMock()
+    mock_service.get_events_in_range.return_value = []
+    mock_service.get_event_by_id.return_value = None
+    mock_service.delete_event.return_value = False
+    return mock_service
 
 
 @pytest.fixture
@@ -221,23 +231,48 @@ class TestQueryEndpoint:
 class TestListEventsEndpoint:
     """Test GET /events endpoint."""
 
-    def test_list_events_empty(self, client):
-        """Test listing events returns empty list."""
+    def test_list_events_unauthorized(self, client):
+        """Test listing events returns 401 when not authorized."""
         response = client.get("/events")
 
-        assert response.status_code == 200
+        assert response.status_code == 401
         data = response.json()
-        assert data["events"] == []
-        assert data["total"] == 0
+        assert "Calendar not connected" in data["message"]
 
-    def test_list_events_with_pagination(self, client):
+    def test_list_events_empty(self, client, mock_calendar_service):
+        """Test listing events returns empty list when authorized."""
+        async def mock_get_service(*args, **kwargs):
+            return mock_calendar_service
+
+        with patch(
+            "src.services.calendar_service.get_user_calendar_service",
+            side_effect=mock_get_service
+        ):
+            response = client.get("/events", headers={"X-User-ID": "test-user"})
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["events"] == []
+            assert data["total"] == 0
+
+    def test_list_events_with_pagination(self, client, mock_calendar_service):
         """Test listing events with pagination params."""
-        response = client.get("/events?limit=10&offset=5")
+        async def mock_get_service(*args, **kwargs):
+            return mock_calendar_service
 
-        assert response.status_code == 200
-        data = response.json()
-        assert data["limit"] == 10
-        assert data["offset"] == 5
+        with patch(
+            "src.services.calendar_service.get_user_calendar_service",
+            side_effect=mock_get_service
+        ):
+            response = client.get(
+                "/events?limit=10&offset=5",
+                headers={"X-User-ID": "test-user"}
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["limit"] == 10
+            assert data["offset"] == 5
 
 
 class TestConfirmEventEndpoint:
@@ -267,21 +302,75 @@ class TestConfirmEventEndpoint:
 class TestGetEventEndpoint:
     """Test GET /events/{event_id} endpoint."""
 
-    def test_get_event_not_found(self, client):
-        """Test getting non-existent event returns 404."""
-        response = client.get("/events/nonexistent_id")
+    def test_get_event_unauthorized(self, client):
+        """Test getting event returns 401 when not authorized."""
+        response = client.get("/events/evt_123")
 
-        assert response.status_code == 404
+        assert response.status_code == 401
+
+    def test_get_event_not_found(self, client, mock_calendar_service):
+        """Test getting non-existent event returns 404."""
+        async def mock_get_service(*args, **kwargs):
+            return mock_calendar_service
+
+        with patch(
+            "src.services.calendar_service.get_user_calendar_service",
+            side_effect=mock_get_service
+        ):
+            response = client.get(
+                "/events/nonexistent_id",
+                headers={"X-User-ID": "test-user"}
+            )
+
+            assert response.status_code == 404
 
 
 class TestDeleteEventEndpoint:
     """Test DELETE /events/{event_id} endpoint."""
 
-    def test_delete_event_not_found(self, client):
-        """Test deleting non-existent event returns 404."""
-        response = client.delete("/events/nonexistent_id")
+    def test_delete_event_unauthorized(self, client):
+        """Test deleting event returns 401 when not authorized."""
+        response = client.delete("/events/evt_123")
 
-        assert response.status_code == 404
+        assert response.status_code == 401
+
+    def test_delete_event_not_found(self, client, mock_calendar_service):
+        """Test deleting non-existent event returns 404."""
+        async def mock_get_service(*args, **kwargs):
+            return mock_calendar_service
+
+        with patch(
+            "src.services.calendar_service.get_user_calendar_service",
+            side_effect=mock_get_service
+        ):
+            response = client.delete(
+                "/events/nonexistent_id",
+                headers={"X-User-ID": "test-user"}
+            )
+
+            assert response.status_code == 404
+
+    def test_delete_event_success(self, client):
+        """Test successfully deleting an event."""
+        mock_service = MagicMock()
+        mock_service.delete_event.return_value = True
+
+        async def mock_get_service(*args, **kwargs):
+            return mock_service
+
+        with patch(
+            "src.services.calendar_service.get_user_calendar_service",
+            side_effect=mock_get_service
+        ):
+            response = client.delete(
+                "/events/evt_123",
+                headers={"X-User-ID": "test-user"}
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["success"] is True
+            assert data["event_id"] == "evt_123"
 
 
 class TestClarifyEventEndpoint:

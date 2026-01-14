@@ -24,6 +24,8 @@ from src.api.models import (
     WorkflowResponse,
     HealthResponse,
     EventListResponse,
+    EventDetailResponse,
+    DeleteEventResponse,
     ErrorResponse,
 )
 from src.api.response_builder import build_response, build_error_response
@@ -33,6 +35,7 @@ from src.api.dependencies import (
     resolve_user_id,
 )
 from src.api.middleware import RequestLoggingMiddleware
+from src.api.auth_routes import router as auth_router
 from src.orchestrator import initialize_state, invoke_orchestrator
 
 logger = logging.getLogger(__name__)
@@ -113,6 +116,9 @@ All orchestrator endpoints return `WorkflowResponse`:
 
 # Add middleware
 app.add_middleware(RequestLoggingMiddleware)
+
+# Include routers
+app.include_router(auth_router)
 
 
 # =============================================================================
@@ -318,7 +324,7 @@ async def confirm_event(
     "/events",
     response_model=EventListResponse,
     summary="List events",
-    description="List events with optional filtering by date and status.",
+    description="List events from user's Google Calendar with optional filtering by date.",
     tags=["Events"],
 )
 async def list_events(
@@ -326,59 +332,187 @@ async def list_events(
     offset: int = Query(default=0, ge=0),
     start_date: Optional[str] = Query(None, description="Filter by start date (ISO 8601)"),
     end_date: Optional[str] = Query(None, description="Filter by end date (ISO 8601)"),
-    status: Optional[str] = Query(None, description="Filter by status"),
-    x_user_id: Optional[str] = Header(None),
+    x_user_id: Optional[str] = Header(None, description="User ID for calendar access"),
 ) -> EventListResponse:
     """
-    List events with pagination and filtering.
+    List events from user's Google Calendar.
 
-    TODO: Implement actual database query
+    Requires user to have completed OAuth authorization.
+    Default date range is today to 30 days from now.
     """
-    # TODO: Query database for events
-    return EventListResponse(
-        events=[],
-        total=0,
-        limit=limit,
-        offset=offset,
-    )
+    from datetime import datetime, timedelta, timezone
+    from dateutil.parser import parse as parse_date
+    from src.services.calendar_service import get_user_calendar_service
+
+    user_id = x_user_id or "default_user"
+
+    # Get user's calendar service
+    calendar_service = await get_user_calendar_service(user_id)
+    if calendar_service is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Calendar not connected. Please authorize via /auth/google/login"
+        )
+
+    # Parse date range (default: today to 30 days from now)
+    now = datetime.now(timezone.utc)
+    try:
+        start = parse_date(start_date) if start_date else now
+        end = parse_date(end_date) if end_date else now + timedelta(days=30)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid date format: {e}")
+
+    # Ensure timezone aware
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=timezone.utc)
+
+    try:
+        # Query calendar
+        events = calendar_service.get_events_in_range(start, end)
+
+        # Convert to response format
+        event_list = []
+        for event in events:
+            event_list.append({
+                "id": event.id,
+                "title": event.title,
+                "description": event.description,
+                "start_time": event.start_time.isoformat() if event.start_time else None,
+                "end_time": event.end_time.isoformat() if event.end_time else None,
+                "location": event.location,
+                "all_day": event.all_day,
+                "status": event.status,
+                "calendar_id": event.calendar_id,
+            })
+
+        # Apply pagination
+        total = len(event_list)
+        paginated = event_list[offset:offset + limit]
+
+        return EventListResponse(
+            events=paginated,
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to list events: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to fetch events: {str(e)}")
 
 
 @app.get(
     "/events/{event_id}",
+    response_model=EventDetailResponse,
     summary="Get event details",
-    description="Get detailed information about a specific event.",
+    description="Get detailed information about a specific event from user's Google Calendar.",
     tags=["Events"],
 )
 async def get_event(
     event_id: str,
-    x_user_id: Optional[str] = Header(None),
-):
+    x_user_id: Optional[str] = Header(None, description="User ID for calendar access"),
+) -> EventDetailResponse:
     """
-    Get event details by ID.
+    Get event details by ID from user's Google Calendar.
 
-    TODO: Implement actual database query
+    Requires user to have completed OAuth authorization.
     """
-    # TODO: Query database for event
-    raise HTTPException(status_code=404, detail=f"Event {event_id} not found")
+    from src.services.calendar_service import get_user_calendar_service
+
+    user_id = x_user_id or "default_user"
+
+    # Get user's calendar service
+    calendar_service = await get_user_calendar_service(user_id)
+    if calendar_service is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Calendar not connected. Please authorize via /auth/google/login"
+        )
+
+    try:
+        # Fetch event from calendar
+        event = calendar_service.get_event_by_id(event_id)
+
+        if event is None:
+            raise HTTPException(status_code=404, detail=f"Event {event_id} not found")
+
+        # Extract optional metadata fields
+        created_at = event.metadata.get('created') if event.metadata else None
+        updated_at = event.metadata.get('updated') if event.metadata else None
+        html_link = event.metadata.get('htmlLink') if event.metadata else None
+
+        return EventDetailResponse(
+            id=event.id,
+            title=event.title,
+            description=event.description,
+            start_time=event.start_time.isoformat() if event.start_time else "",
+            end_time=event.end_time.isoformat() if event.end_time else "",
+            location=event.location,
+            all_day=event.all_day,
+            status=event.status,
+            calendar_id=event.calendar_id,
+            html_link=html_link,
+            created_at=created_at,
+            updated_at=updated_at,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get event {event_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to fetch event: {str(e)}")
 
 
 @app.delete(
     "/events/{event_id}",
+    response_model=DeleteEventResponse,
     summary="Delete event",
-    description="Soft delete an event (marks as cancelled).",
+    description="Delete an event from user's Google Calendar.",
     tags=["Events"],
 )
 async def delete_event(
     event_id: str,
-    x_user_id: Optional[str] = Header(None),
-):
+    x_user_id: Optional[str] = Header(None, description="User ID for calendar access"),
+) -> DeleteEventResponse:
     """
-    Soft delete an event.
+    Delete an event from user's Google Calendar.
 
-    TODO: Implement actual database operation
+    Requires user to have completed OAuth authorization.
     """
-    # TODO: Soft delete in database
-    raise HTTPException(status_code=404, detail=f"Event {event_id} not found")
+    from src.services.calendar_service import get_user_calendar_service
+
+    user_id = x_user_id or "default_user"
+
+    # Get user's calendar service
+    calendar_service = await get_user_calendar_service(user_id)
+    if calendar_service is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Calendar not connected. Please authorize via /auth/google/login"
+        )
+
+    try:
+        # Delete event from calendar
+        deleted = calendar_service.delete_event(event_id)
+
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"Event {event_id} not found")
+
+        logger.info(f"Deleted event {event_id} for user {user_id}")
+
+        return DeleteEventResponse(
+            success=True,
+            event_id=event_id,
+            message="Event deleted successfully",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete event {event_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to delete event: {str(e)}")
 
 
 # =============================================================================

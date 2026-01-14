@@ -422,7 +422,7 @@ class CalendarService:
 
 def get_calendar_service() -> CalendarService:
     """
-    Get the calendar service singleton.
+    Get the calendar service singleton (service account).
 
     Returns:
         CalendarService instance configured for Google Calendar
@@ -440,3 +440,125 @@ def reset_calendar_service():
     """Reset the calendar service singleton (useful for testing)."""
     global _calendar_service
     _calendar_service = None
+
+
+class UserCalendarService(CalendarService):
+    """
+    Calendar service for a specific user's calendar using OAuth tokens.
+
+    Unlike the singleton CalendarService (which uses service account),
+    this creates a per-user service using their OAuth credentials.
+    """
+
+    def __init__(self, oauth_credentials: dict, user_calendar_id: str = "primary"):
+        """
+        Initialize user calendar service.
+
+        Args:
+            oauth_credentials: Dict with token, refresh_token, etc.
+            user_calendar_id: User's calendar ID (default: "primary")
+        """
+        self._settings = get_settings()
+        self._repository = None
+        self._initialized = False
+        self._oauth_credentials = oauth_credentials
+        self._user_calendar_id = user_calendar_id
+
+    def _ensure_initialized(self):
+        """Initialize with OAuth credentials."""
+        if self._initialized:
+            return
+
+        from src.integrations.google_calendar import (
+            GoogleAuthManager,
+            GoogleCalendarRepository,
+        )
+
+        try:
+            # Create auth manager with OAuth credentials
+            auth_manager = GoogleAuthManager(
+                oauth_credentials=self._oauth_credentials
+            )
+
+            # Create repository
+            self._repository = GoogleCalendarRepository(auth_manager)
+            logger.info(
+                f"User calendar initialized for calendar: {self._user_calendar_id}"
+            )
+            self._initialized = True
+
+        except Exception as e:
+            logger.error(f"Failed to initialize user calendar: {e}")
+            raise
+
+    @property
+    def calendar_id(self) -> str:
+        """Get the user's calendar ID."""
+        return self._user_calendar_id
+
+
+async def get_user_calendar_service(
+    user_id: str,
+    session=None,
+) -> Optional[UserCalendarService]:
+    """
+    Get a calendar service for a specific user using their OAuth tokens.
+
+    This is the primary way to access a user's calendar after they've
+    completed OAuth authorization.
+
+    Args:
+        user_id: The user ID
+        session: Optional AsyncSession (creates one if not provided)
+
+    Returns:
+        UserCalendarService for the user, or None if not authorized
+    """
+    from src.auth.token_storage import get_user_credentials
+    from src.database import get_async_db_context
+
+    if session is None:
+        async with get_async_db_context() as session:
+            credentials = await get_user_credentials(session, user_id)
+    else:
+        credentials = await get_user_credentials(session, user_id)
+
+    if credentials is None:
+        logger.warning(f"No OAuth credentials found for user {user_id}")
+        return None
+
+    return UserCalendarService(
+        oauth_credentials=credentials,
+        user_calendar_id="primary",  # User's primary calendar
+    )
+
+
+def get_user_calendar_service_sync(
+    user_id: str,
+) -> Optional[UserCalendarService]:
+    """
+    Synchronous wrapper for get_user_calendar_service.
+
+    For use in orchestrator nodes that need sync access.
+
+    Args:
+        user_id: The user ID
+
+    Returns:
+        UserCalendarService for the user, or None if not authorized
+    """
+    import asyncio
+    import concurrent.futures
+
+    async def _get_service():
+        return await get_user_calendar_service(user_id)
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_get_service())
+
+    # Already in event loop - use thread pool
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        future = pool.submit(asyncio.run, _get_service())
+        return future.result()

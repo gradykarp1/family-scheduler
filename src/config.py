@@ -90,7 +90,7 @@ class Settings(BaseSettings):
         description="Default timezone for the family (IANA timezone name, e.g., America/Los_Angeles)"
     )
 
-    # Google Calendar Configuration
+    # Google Calendar Configuration (Service Account - legacy)
     google_calendar_id: str = Field(
         default="",
         description="Google Calendar ID for the family calendar"
@@ -102,6 +102,20 @@ class Settings(BaseSettings):
     google_service_account_json: str = Field(
         default="",
         description="Google service account JSON (alternative to file, for deployments)"
+    )
+
+    # Google OAuth Configuration (for user calendars)
+    google_oauth_client_id: str = Field(
+        default="",
+        description="Google OAuth 2.0 client ID"
+    )
+    google_oauth_client_secret: str = Field(
+        default="",
+        description="Google OAuth 2.0 client secret"
+    )
+    google_oauth_redirect_uri: str = Field(
+        default="http://localhost:8000/auth/google/callback",
+        description="OAuth redirect URI (must match Google Cloud Console)"
     )
 
     model_config = SettingsConfigDict(
@@ -152,6 +166,44 @@ class Settings(BaseSettings):
     def uses_google_calendar(self) -> bool:
         """Check if Google Calendar is the configured provider."""
         return self.calendar_provider == "google"
+
+    @property
+    def uses_postgresql(self) -> bool:
+        """Check if PostgreSQL is the configured database."""
+        return "postgresql" in self.database_url.lower()
+
+    @property
+    def uses_google_oauth(self) -> bool:
+        """Check if Google OAuth is configured."""
+        return bool(self.google_oauth_client_id and self.google_oauth_client_secret)
+
+    def validate_production_config(self) -> None:
+        """
+        Validate configuration for production environment.
+
+        Raises:
+            ValueError: If required production settings are missing or invalid
+        """
+        if not self.is_production:
+            return
+
+        errors = []
+
+        # PostgreSQL is required in production (SQLite doesn't persist on Vercel)
+        if not self.uses_postgresql:
+            errors.append(
+                "Production requires PostgreSQL. "
+                "Set DATABASE_URL to a PostgreSQL connection string."
+            )
+
+        # LLM API key is required
+        if self.llm_provider == "anthropic" and not self.anthropic_api_key:
+            errors.append("ANTHROPIC_API_KEY is required in production.")
+        elif self.llm_provider == "openai" and not self.openai_api_key:
+            errors.append("OPENAI_API_KEY is required in production.")
+
+        if errors:
+            raise ValueError("Production configuration errors:\n- " + "\n- ".join(errors))
 
     def validate_google_calendar_config(self) -> None:
         """

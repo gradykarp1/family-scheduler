@@ -5,17 +5,19 @@ Provides:
 - Database engine creation with proper configuration
 - SessionLocal factory for creating database sessions
 - get_db() dependency for FastAPI request-scoped sessions
+- Async session support for async endpoints
 - Database initialization utilities
 """
 
 import logging
-from contextlib import contextmanager
-from typing import Generator
+from contextlib import contextmanager, asynccontextmanager
+from typing import Generator, AsyncGenerator
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
 from src.config import get_settings
 
@@ -23,6 +25,10 @@ logger = logging.getLogger(__name__)
 
 # Get settings
 settings = get_settings()
+
+# Validate production configuration
+if settings.is_production:
+    settings.validate_production_config()
 
 # Configure engine based on database type
 if "sqlite" in settings.database_url.lower():
@@ -61,6 +67,48 @@ SessionLocal = sessionmaker(
 )
 
 
+# =============================================================================
+# Async Engine and Session (for async endpoints)
+# =============================================================================
+
+def _get_async_database_url(sync_url: str) -> str:
+    """Convert sync database URL to async URL."""
+    if "sqlite" in sync_url.lower():
+        # SQLite async uses aiosqlite
+        return sync_url.replace("sqlite:///", "sqlite+aiosqlite:///")
+    elif "postgresql" in sync_url.lower():
+        # PostgreSQL async uses asyncpg
+        return sync_url.replace("postgresql://", "postgresql+asyncpg://")
+    return sync_url
+
+
+# Create async engine
+async_database_url = _get_async_database_url(settings.database_url)
+
+if "sqlite" in settings.database_url.lower():
+    async_engine = create_async_engine(
+        async_database_url,
+        echo=settings.log_level == "DEBUG",
+    )
+else:
+    async_engine = create_async_engine(
+        async_database_url,
+        pool_size=5,
+        pool_recycle=3600,
+        pool_pre_ping=True,
+        echo=settings.log_level == "DEBUG",
+    )
+
+# Async session factory
+AsyncSessionLocal = async_sessionmaker(
+    async_engine,
+    class_=AsyncSession,
+    autocommit=False,
+    autoflush=False,
+    expire_on_commit=False,
+)
+
+
 def get_db() -> Generator[Session, None, None]:
     """
     FastAPI dependency for request-scoped database sessions.
@@ -86,6 +134,53 @@ def get_db() -> Generator[Session, None, None]:
         raise
     finally:
         db.close()
+
+
+async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
+    """
+    FastAPI dependency for async database sessions.
+
+    Yields an async database session that is automatically closed after the request.
+    Automatically rolls back on exception.
+
+    Usage in FastAPI:
+        @app.get("/events")
+        async def get_events(session: AsyncSession = Depends(get_async_session)):
+            result = await session.execute(select(Event))
+            return result.scalars().all()
+
+    Yields:
+        AsyncSession: SQLAlchemy async database session
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+
+@asynccontextmanager
+async def get_async_db_context() -> AsyncGenerator[AsyncSession, None]:
+    """
+    Async context manager for database sessions outside FastAPI.
+
+    Usage for scripts, tests, or background tasks:
+        async with get_async_db_context() as session:
+            result = await session.execute(select(Event))
+            events = result.scalars().all()
+
+    Yields:
+        AsyncSession: SQLAlchemy async database session
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
 
 @contextmanager

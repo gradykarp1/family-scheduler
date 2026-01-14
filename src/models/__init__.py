@@ -9,6 +9,7 @@ Tables:
 - calendars: Google Calendar references and configuration
 - resources: Shared family resources (cars, rooms, etc.)
 - constraints: Scheduling rules and preferences
+- user_tokens: OAuth tokens for user calendar access
 """
 
 # Import base classes
@@ -18,6 +19,7 @@ from src.models.base import Base, BaseModel, GUID, get_json_type
 from src.models.family import FamilyMember, Calendar
 from src.models.resources import Resource
 from src.models.constraints import Constraint
+from src.models.tokens import UserToken
 
 # Export all for easy importing
 __all__ = [
@@ -33,4 +35,6 @@ __all__ = [
     "Resource",
     # Constraint configuration
     "Constraint",
+    # Authentication
+    "UserToken",
 ]

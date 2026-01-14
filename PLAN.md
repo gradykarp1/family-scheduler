@@ -52,8 +52,16 @@
    - pytest `integration` marker for selective test running
 
 ### Not Yet Implemented
+- Google OAuth for user calendars (users connect their own calendar)
+- Complete API endpoints (list/get/delete events)
+- Webhook support for messaging bot integrations
 - Performance testing
-- Production deployment configuration
+
+### Infrastructure Ready
+- PostgreSQL support (via `psycopg` and `langgraph-checkpoint-postgres`)
+- Vercel deployment configuration (`vercel.json`)
+- Production validation in config (enforces PostgreSQL in production)
+- PostgreSQL checkpointing for multi-turn conversations
 
 **Total Tests: 448 passing (unit tests)**
 
