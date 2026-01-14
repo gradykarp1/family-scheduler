@@ -7,131 +7,117 @@
 2. **Development Environment** (ADR-010, ADR-011) - Poetry, LLM providers, config management
 3. **LangGraph State Schema** (ADR-012) - TypedDict state, Pydantic output models
 4. **Database Models** (ADR-013) - SQLAlchemy models for family configuration
-   - FamilyMember, Calendar, Resource, Constraint
+   - FamilyMember, Calendar, Resource, Constraint, UserToken, Webhook
    - Note: Events stored in Google Calendar, not locally
 5. **Database Infrastructure** - Session management, GUID compatibility, soft deletion
-6. **Orchestrator** (ADR-015) - LangGraph graph with 8 nodes, 50 tests
+   - Async session support (aiosqlite, asyncpg)
+   - PostgreSQL checkpointing for serverless
+6. **Orchestrator** (ADR-015) - LangGraph graph with 8 nodes
    - `src/orchestrator/__init__.py` - Graph builder, invoke_orchestrator, analyze_result
    - `src/orchestrator/nodes.py` - 8 node implementations with error handling
    - `src/orchestrator/routing.py` - Conditional routing decision functions
-   - `src/orchestrator/checkpointing.py` - MemorySaver for state persistence
-7. **FastAPI API Layer** (ADR-014) - HTTP endpoints with 62 tests
-   - `src/api/main.py` - FastAPI app with endpoints (/health, /events, /query, etc.)
+   - `src/orchestrator/checkpointing.py` - PostgreSQL/MemorySaver for state persistence
+7. **FastAPI API Layer** (ADR-014) - HTTP endpoints
+   - `src/api/main.py` - FastAPI app with all endpoints
    - `src/api/models.py` - Pydantic request/response models
-   - `src/api/response_builder.py` - State to API response transformation
-   - `src/api/dependencies.py` - Dependency injection for orchestrator
-   - `src/api/middleware.py` - Request logging with X-Request-ID tracking
-8. **Service Layer** - Business logic helpers with 75 tests
-   - `src/services/recurrence.py` - RRULE parsing and expansion (dateutil)
-   - `src/services/queries.py` - Event/calendar queries with eager loading
+   - `src/api/auth_routes.py` - OAuth authentication endpoints
+   - `src/api/webhook_routes.py` - Webhook management endpoints
+8. **Service Layer** - Business logic helpers
+   - `src/services/recurrence.py` - RRULE parsing and expansion
+   - `src/services/queries.py` - Event/calendar queries
    - `src/services/resources.py` - Resource availability checking
-9. **Google Calendar Integration** - External calendar as primary storage with 96 tests
-   - `src/integrations/base.py` - CalendarRepository protocol, CalendarEvent types
+   - `src/services/calendar_service.py` - Per-user calendar access
+   - `src/services/webhook_service.py` - Webhook delivery with retry
+9. **Google Calendar Integration** - External calendar as primary storage
    - `src/integrations/google_calendar/` - Full Google Calendar API implementation
-     - `exceptions.py` - Custom exceptions with retryable flags
-     - `auth.py` - Service account authentication
-     - `adapter.py` - Event ↔ Google Calendar format mapping
-     - `client.py` - API client with retry logic
-     - `repository.py` - Async GoogleCalendarRepository
-   - `src/services/calendar_service.py` - Sync wrapper for orchestrator nodes
-   - Orchestrator nodes updated to use calendar service:
-     - `scheduling_node` - Finds available slots from calendar
-     - `conflict_detection_node` - Queries real events for conflicts
-     - `auto_confirm_node` - Persists events to calendar
-     - `query_node` - Queries actual events for responses
-10. **Enhanced Prompts** (Phase 2b) - Few-shot examples and structured output with 18 tests
-   - `src/agents/prompts/` - Prompt templates with few-shot examples
-   - NLParserOutput, ResolutionOutput Pydantic models for LLM structured output
-   - `with_structured_output()` for guaranteed JSON schema compliance
-   - Fallback parsers for graceful LLM error handling
-11. **Integration Tests** (Phase 5) - Full workflow testing with 28 tests
-   - `tests/integration/conftest.py` - Mock LLM, mock calendar, orchestrator fixtures
-   - `tests/integration/test_orchestrator_workflows.py` - Event creation, conflicts, queries
-   - `tests/integration/test_api_integration.py` - HTTP endpoint integration tests
-   - `tests/integration/test_multi_turn_conversations.py` - Conversation continuity tests
-   - pytest `integration` marker for selective test running
-
-### Not Yet Implemented
-- Google OAuth for user calendars (users connect their own calendar)
-- Complete API endpoints (list/get/delete events)
-- Webhook support for messaging bot integrations
-- Performance testing
+   - Service account AND OAuth credential support
+   - Per-user calendar access via OAuth tokens
+10. **Google OAuth** - Users connect their own Google Calendar
+    - `src/auth/google_oauth.py` - OAuth 2.0 flow implementation
+    - `src/auth/token_storage.py` - Token persistence with auto-refresh
+    - `src/models/tokens.py` - UserToken model
+11. **Webhook Support** - Push notifications for messaging bots
+    - `src/models/webhooks.py` - Webhook registration model
+    - `src/services/webhook_service.py` - HMAC-signed delivery with retry
+    - Event types: event.created, event.updated, event.deleted
+12. **Integration Tests** - Full workflow testing
+    - `tests/integration/` - Orchestrator, API, and multi-turn conversation tests
+    - pytest `integration` marker for selective running
 
 ### Infrastructure Ready
 - PostgreSQL support (via `psycopg` and `langgraph-checkpoint-postgres`)
 - Vercel deployment configuration (`vercel.json`)
 - Production validation in config (enforces PostgreSQL in production)
 - PostgreSQL checkpointing for multi-turn conversations
+- Async database drivers (aiosqlite, asyncpg, greenlet)
 
-**Total Tests: 448 passing (unit tests)**
+**Total Tests: 480 passing**
 
 ---
 
-## Recommended Next Steps
+## Implementation Phases - All Complete ✅
 
-### Phase 2: Enhanced Agent Logic (ADR-016) ✅ COMPLETED
-**Status: All agent enhancements complete**
+### Phase 1: PostgreSQL & Vercel Infrastructure ✅ COMPLETED
+- PostgreSQL checkpointing with `langgraph-checkpoint-postgres`
+- Production config validation (enforces PostgreSQL)
+- `vercel.json` deployment configuration
+- Async database session support
 
-**Phase 2a: Calendar Integration** ✅ COMPLETED
-- Scheduling Agent queries calendar for available slots
-- Conflict Detection queries real events for overlaps
-- Auto Confirm persists events to calendar (Google or local)
-- Query Node retrieves actual events for responses
+### Phase 2: Google OAuth for User Calendars ✅ COMPLETED
+- `src/auth/google_oauth.py` - OAuth 2.0 authorization code flow
+- `src/auth/token_storage.py` - Token persistence with auto-refresh
+- `src/api/auth_routes.py` - /auth/google/login, /auth/google/callback, /auth/status, /auth/logout
+- `src/services/calendar_service.py` - UserCalendarService for per-user access
+- `src/integrations/google_calendar/auth.py` - OAuth credential support in GoogleAuthManager
 
-**Phase 2b: Improved Prompts** ✅ COMPLETED
-- `src/agents/prompts/` - Few-shot examples for NL Parser and Resolution Agent
-- `with_structured_output()` - Guaranteed JSON schema compliance via Pydantic
-- `NLParserOutput`, `ResolutionOutput` - Typed LLM output models in state.py
-- Fallback parsers for graceful degradation when LLM fails
-- 18 new prompt tests, updated orchestrator node tests
+### Phase 3: Complete API Endpoints ✅ COMPLETED
+- `GET /events` - List events from user's Google Calendar
+- `GET /events/{id}` - Get specific event details
+- `DELETE /events/{id}` - Delete event from calendar
+- All endpoints require OAuth authorization (401 if not connected)
 
-### Phase 3: FastAPI Endpoints (ADR-014) ✅ COMPLETED
-**Status: Done - 62 tests passing**
+### Phase 4: Webhook Support ✅ COMPLETED
+- `src/models/webhooks.py` - Webhook registration model
+- `src/api/webhook_routes.py` - POST/GET/DELETE /webhooks endpoints
+- `src/services/webhook_service.py` - Delivery with HMAC signatures and retry logic
+- Event triggers integrated into create_event and delete_event endpoints
 
-Implemented:
-- `src/api/main.py` - FastAPI app with health check and all endpoints
-- `src/api/models.py` - Request/response Pydantic schemas
-- `src/api/response_builder.py` - Orchestrator state → API response
-- `src/api/dependencies.py` - Orchestrator dependency injection
-- `src/api/middleware.py` - Request logging with X-Request-ID
+---
 
-Endpoints:
-- `GET /health` - Health check with orchestrator status
-- `POST /events` - Create event from natural language
-- `GET /events` - List events with pagination
-- `GET /events/{id}` - Get specific event
-- `DELETE /events/{id}` - Delete event
-- `POST /events/{id}/confirm` - Confirm proposed event
-- `POST /events/clarify` - Submit clarification
-- `POST /query` - Natural language calendar queries
+## API Endpoints Summary
 
-### Phase 4: Service Layer ✅ COMPLETED
-**Status: Done - 75 tests passing**
+### Authentication
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/auth/google/login` | GET | Get OAuth authorization URL |
+| `/auth/google/callback` | GET | Handle OAuth callback |
+| `/auth/status` | GET | Check if user has connected calendar |
+| `/auth/logout` | POST | Disconnect calendar |
 
-Implemented:
-- `src/services/recurrence.py` - RRULE parsing, expansion, validation (dateutil)
-- `src/services/queries.py` - Event/calendar queries with eager loading
-- `src/services/resources.py` - Resource availability checking
+### Events
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/events` | POST | Create event from natural language |
+| `/events` | GET | List events from user's calendar |
+| `/events/{id}` | GET | Get specific event |
+| `/events/{id}` | DELETE | Delete event |
+| `/events/{id}/confirm` | POST | Confirm proposed event |
+| `/events/clarify` | POST | Clarify low-confidence parsing |
 
-Key functions:
-- `expand_recurrence()` - Expand RRULE into instances within time window
-- `get_events_in_range()` - Query events with eager-loaded relationships
-- `find_overlapping_events()` - Conflict detection support
-- `check_resource_availability()` - Check capacity and reservations
-- `find_available_slots()` - Find open time slots for resources
+### Webhooks
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/webhooks` | POST | Register new webhook |
+| `/webhooks` | GET | List user's webhooks |
+| `/webhooks/{id}` | GET | Get webhook details |
+| `/webhooks/{id}` | DELETE | Delete webhook |
+| `/webhooks/{id}/toggle` | PATCH | Enable/disable webhook |
 
-### Phase 5: Integration & Testing ✅ MOSTLY COMPLETED
-**Status: Integration tests complete, performance testing pending**
-
-**Completed:**
-- `tests/integration/conftest.py` - Mock fixtures (LLM, calendar, orchestrator)
-- `tests/integration/test_orchestrator_workflows.py` - 13 workflow tests
-- `tests/integration/test_api_integration.py` - 10 API tests
-- `tests/integration/test_multi_turn_conversations.py` - 5 conversation tests
-- pytest `integration` marker for selective running
-
-**Pending:**
-- Performance testing
+### System
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/query` | POST | Natural language query |
 
 ---
 
@@ -146,17 +132,25 @@ Key functions:
 
 **Google Calendar (Source of Truth for Events)**
 - All event data stored in Google Calendar API
-- CalendarService wraps GoogleCalendarRepository for orchestrator nodes
+- Per-user access via OAuth tokens
 - Events created, updated, deleted via Google Calendar API
 
-**PostgreSQL (Family Configuration)**
+**PostgreSQL (Configuration & State)**
 - `family_members`: Family member profiles and preferences
-- `calendars`: Google Calendar references (google_calendar_id)
-- `resources`: Shared family resources (optional google_calendar_id for availability)
+- `calendars`: Google Calendar references
+- `resources`: Shared family resources
 - `constraints`: Scheduling rules and preferences
+- `user_tokens`: OAuth tokens for calendar access
+- `webhooks`: Webhook registrations for notifications
 
-**Removed Tables** (events now in Google Calendar)
-- `events` → stored in Google Calendar
-- `event_participants` → tracked in Google Calendar
-- `resource_reservations` → tracked via resource's google_calendar_id
-- `conflicts` → detected dynamically from calendar data
+---
+
+## Potential Future Enhancements
+
+- Performance testing and optimization
+- Rate limiting for API endpoints
+- Batch webhook delivery
+- Webhook retry queue (Redis/PostgreSQL)
+- Mobile push notifications
+- Multi-family support
+- Resource booking UI
