@@ -8,7 +8,7 @@ Configured via .env file in project root.
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -124,6 +124,23 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore"
     )
+
+    @field_validator(
+        "anthropic_api_key",
+        "openai_api_key",
+        "google_oauth_client_id",
+        "google_oauth_client_secret",
+        "google_oauth_redirect_uri",
+        "google_calendar_id",
+        "database_url",
+        mode="before",
+    )
+    @classmethod
+    def strip_whitespace(cls, v: str) -> str:
+        """Strip leading/trailing whitespace from string values."""
+        if isinstance(v, str):
+            return v.strip()
+        return v
 
     @property
     def is_development(self) -> bool:

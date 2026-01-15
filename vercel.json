@@ -12,8 +12,5 @@
       "src": "/(.*)",
       "dest": "src/app.py"
     }
-  ],
-  "env": {
-    "PYTHON_ENV": "production"
-  }
+  ]
 }

@@ -117,3 +117,5 @@ data/*.sqlite
 data/*.sqlite3
 !data/.gitkeep
 test_data/
+.vercel
+.env*.local
