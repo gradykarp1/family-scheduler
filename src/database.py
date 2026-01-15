@@ -78,7 +78,26 @@ def _get_async_database_url(sync_url: str) -> str:
         return sync_url.replace("sqlite:///", "sqlite+aiosqlite:///")
     elif "postgresql" in sync_url.lower():
         # PostgreSQL async uses asyncpg
-        return sync_url.replace("postgresql://", "postgresql+asyncpg://")
+        # Handle both postgresql:// and postgresql+psycopg://
+        if "postgresql+psycopg://" in sync_url:
+            url = sync_url.replace("postgresql+psycopg://", "postgresql+asyncpg://")
+        else:
+            url = sync_url.replace("postgresql://", "postgresql+asyncpg://")
+
+        # asyncpg uses 'ssl' parameter instead of 'sslmode'
+        # sslmode=require -> ssl=require
+        url = url.replace("sslmode=", "ssl=")
+
+        # Remove channel_binding parameter (not supported by asyncpg)
+        if "channel_binding=" in url:
+            import re
+            url = re.sub(r'[&?]channel_binding=[^&]*', '', url)
+            # Clean up any trailing & or ?
+            url = re.sub(r'\?&', '?', url)
+            url = re.sub(r'&$', '', url)
+            url = re.sub(r'\?$', '', url)
+
+        return url
     return sync_url
 
 

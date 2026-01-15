@@ -126,6 +126,9 @@ class Settings(BaseSettings):
     )
 
     @field_validator(
+        "python_env",
+        "llm_provider",
+        "calendar_provider",
         "anthropic_api_key",
         "openai_api_key",
         "google_oauth_client_id",

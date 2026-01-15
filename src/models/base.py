@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import Column, String, DateTime, JSON, TypeDecorator, func
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PostgreSQL_UUID
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import CHAR
 
@@ -24,10 +24,8 @@ class GUID(TypeDecorator):
     """
     Platform-independent GUID type.
 
-    Uses PostgreSQL's UUID type on PostgreSQL databases.
-    Uses CHAR(32) on SQLite databases (stores hex representation).
-
-    This allows the same model definitions to work across both databases.
+    Uses CHAR(32) on all databases (stores hex representation without dashes).
+    This ensures consistency across SQLite and PostgreSQL.
     """
 
     impl = CHAR(32)
@@ -35,36 +33,26 @@ class GUID(TypeDecorator):
 
     def load_dialect_impl(self, dialect):
         """Load the appropriate type for the dialect."""
-        if dialect.name == "postgresql":
-            return dialect.type_descriptor(PostgreSQL_UUID())
-        else:
-            return dialect.type_descriptor(CHAR(32))
+        # Always use CHAR(32) for consistency across databases
+        return dialect.type_descriptor(CHAR(32))
 
     def process_bind_param(self, value, dialect):
         """
-        Convert UUID to database-appropriate format.
-
-        PostgreSQL: Store as UUID type (string representation)
-        SQLite: Store as CHAR(32) (hex representation without dashes)
+        Convert UUID to hex string (32 chars, no dashes).
         """
         if value is None:
             return value
 
-        if dialect.name == "postgresql":
-            return str(value)
+        # Always store as hex without dashes
+        if isinstance(value, uuid.UUID):
+            return value.hex
         else:
-            # SQLite: store hex without dashes
-            if isinstance(value, uuid.UUID):
-                return value.hex
-            else:
-                # If string UUID, convert to hex
-                return uuid.UUID(value).hex if value else None
+            # If string UUID, convert to hex
+            return uuid.UUID(value).hex if value else None
 
     def process_result_value(self, value, dialect):
         """
         Convert database value back to UUID.
-
-        Handles both PostgreSQL UUID strings and SQLite hex strings.
         """
         if value is None:
             return value
@@ -72,7 +60,7 @@ class GUID(TypeDecorator):
         if isinstance(value, uuid.UUID):
             return value
 
-        # Convert string to UUID
+        # Convert hex string to UUID
         return uuid.UUID(value)
 
 
